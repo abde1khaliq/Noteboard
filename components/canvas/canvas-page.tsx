@@ -11,10 +11,6 @@ import {
   type DrawAction,
 } from "@/store/whiteboard-store";
 
-// ── Constants ──
-export const PAGE_WIDTH = 768;
-export const PAGE_HEIGHT = 1024;
-
 interface CanvasPageProps {
   pageIndex: number;
 }
@@ -28,6 +24,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const activeTool = useWhiteboardStore((s) => s.activeTool);
   const strokeColor = useWhiteboardStore((s) => s.strokeColor);
   const strokeWidth = useWhiteboardStore((s) => s.strokeWidth);
+  const drawWithTouch = useWhiteboardStore((s) => s.drawWithTouch);
   const pageActions = useWhiteboardStore((s) => s.pages[pageIndex]?.actions ?? []);
   const addAction = useWhiteboardStore((s) => s.addAction);
 
@@ -39,7 +36,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       const outlinePoints = getStroke(
         stroke.points.map((p) => [p.x, p.y, p.pressure]),
         {
-          size: stroke.width * 2,
+          size: stroke.width * 2.5,
           thinning: stroke.tool === "highlighter" ? 0 : 0.5,
           smoothing: 0.5,
           streamline: 0.5,
@@ -74,7 +71,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       if (stroke.points.length < 2) return;
       ctx.save();
       ctx.globalCompositeOperation = "destination-out";
-      ctx.lineWidth = stroke.width * 4;
+      ctx.lineWidth = stroke.width * 5;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.beginPath();
@@ -94,7 +91,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     (ctx: CanvasRenderingContext2D, shape: ShapeStroke) => {
       ctx.save();
       ctx.strokeStyle = shape.color;
-      ctx.lineWidth = shape.width;
+      ctx.lineWidth = shape.width * 1.5;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
@@ -164,32 +161,28 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Set up for Retina/HiDPI
     const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
     const displayWidth = canvas.clientWidth;
     const displayHeight = canvas.clientHeight;
-    const needsResize =
-      canvas.width !== Math.floor(displayWidth * dpr) ||
-      canvas.height !== Math.floor(displayHeight * dpr);
+    if (displayWidth === 0 || displayHeight === 0) return;
 
-    if (needsResize) {
+    if (
+      canvas.width !== Math.floor(displayWidth * dpr) ||
+      canvas.height !== Math.floor(displayHeight * dpr)
+    ) {
       canvas.width = Math.floor(displayWidth * dpr);
       canvas.height = Math.floor(displayHeight * dpr);
-      ctx.scale(dpr, dpr);
     }
 
-    // Clear to white
+    // Clear canvas (transparent to reveal visible grid background)
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
 
-    // Scale context to map logical coords to display
+    // Scale to HiDPI Retina
     ctx.save();
-    const scaleX = displayWidth / PAGE_WIDTH;
-    const scaleY = displayHeight / PAGE_HEIGHT;
-    ctx.scale(scaleX, scaleY);
+    ctx.scale(dpr, dpr);
 
     // Replay all actions
     for (const action of pageActions) {
@@ -203,13 +196,20 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     redrawCanvas();
   }, [redrawCanvas]);
 
-  // ── Pointer coordinate helpers ──
+  // Window resize handler for orientation change / screen resize
+  useEffect(() => {
+    const handleResize = () => redrawCanvas();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [redrawCanvas]);
+
+  // ── Pointer coordinate helpers (1:1 pixel coords) ──
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
     return {
-      x: ((e.clientX - rect.left) / rect.width) * PAGE_WIDTH,
-      y: ((e.clientY - rect.top) / rect.height) * PAGE_HEIGHT,
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
       pressure: e.pressure || 0.5,
     };
   };
@@ -225,7 +225,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         y: point.y,
         text,
         color: strokeColor,
-        fontSize: Math.max(strokeWidth * 6, 16),
+        fontSize: Math.max(strokeWidth * 6, 18),
       };
       addAction(pageIndex, textAction);
     }
@@ -233,8 +233,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
   // ── Pointer handlers ──
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // Only draw with pen/mouse — let finger events pass through for scroll
-    if (e.pointerType === "touch") return;
+    // If touch drawing is disabled, let finger events pass through for scroll
+    if (e.pointerType === "touch" && !drawWithTouch) return;
 
     e.preventDefault();
     (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
@@ -262,7 +262,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isDrawing.current) return;
-    if (e.pointerType === "touch") return;
+    if (e.pointerType === "touch" && !drawWithTouch) return;
     e.preventDefault();
 
     const canvas = canvasRef.current!;
@@ -280,8 +280,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       if (coalesced.length > 0) {
         for (const ce of coalesced) {
           currentPoints.current.push({
-            x: ((ce.clientX - rect.left) / rect.width) * PAGE_WIDTH,
-            y: ((ce.clientY - rect.top) / rect.height) * PAGE_HEIGHT,
+            x: ce.clientX - rect.left,
+            y: ce.clientY - rect.top,
             pressure: ce.pressure || 0.5,
           });
         }
@@ -294,9 +294,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       const ctx = canvas.getContext("2d")!;
       const dpr = window.devicePixelRatio || 1;
       ctx.save();
-      const scaleX = canvas.clientWidth / PAGE_WIDTH;
-      const scaleY = canvas.clientHeight / PAGE_HEIGHT;
-      ctx.scale(scaleX * dpr, scaleY * dpr);
+      ctx.scale(dpr, dpr);
 
       if (activeTool === "eraser") {
         drawEraserStroke(ctx, {
@@ -330,9 +328,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       const ctx = canvas.getContext("2d")!;
       const dpr = window.devicePixelRatio || 1;
       ctx.save();
-      const scaleX = canvas.clientWidth / PAGE_WIDTH;
-      const scaleY = canvas.clientHeight / PAGE_HEIGHT;
-      ctx.scale(scaleX * dpr, scaleY * dpr);
+      ctx.scale(dpr, dpr);
       drawShape(ctx, {
         id: "preview",
         tool: activeTool,
@@ -349,7 +345,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isDrawing.current) return;
-    if (e.pointerType === "touch") return;
+    if (e.pointerType === "touch" && !drawWithTouch) return;
     isDrawing.current = false;
 
     const point = getCanvasPoint(e);
@@ -412,13 +408,16 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   };
 
   return (
-    <div className="canvas-page flex justify-center py-3 first:pt-20">
+    <div className="relative w-full h-full flex flex-col items-center justify-center">
+      {/* Discreet page number badge */}
+      <div className="absolute top-3 left-4 z-10 px-2.5 py-1 rounded-lg bg-black/5 dark:bg-white/10 backdrop-blur-sm text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 pointer-events-none">
+        Page {pageIndex + 1}
+      </div>
+
       <canvas
         ref={canvasRef}
-        className="rounded-lg bg-white shadow-lg"
+        className="canvas-grid-bg w-full h-full rounded-2xl shadow-xl ring-1 ring-black/5 dark:ring-white/10"
         style={{
-          width: "min(calc(100vw - 48px), 768px)",
-          aspectRatio: `${PAGE_WIDTH} / ${PAGE_HEIGHT}`,
           touchAction: "none",
           cursor:
             activeTool === "text"

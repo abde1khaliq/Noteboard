@@ -1,6 +1,6 @@
 "use client";
 
-import { HStack, IconButton, Separator, Text } from "@chakra-ui/react";
+import { HStack, IconButton, Text } from "@chakra-ui/react";
 import {
   Pen,
   Eraser,
@@ -11,10 +11,13 @@ import {
   Type,
   Undo2,
   Redo2,
+  Hand,
+  Plus,
 } from "lucide-react";
 import { useWhiteboardStore, type Tool } from "@/store/whiteboard-store";
 import { ColorPicker } from "./color-picker";
 import { StrokeWidthPicker } from "./stroke-width-picker";
+import { ThemeToggle } from "./theme-toggle";
 
 const tools: { id: Tool; icon: React.ElementType; label: string }[] = [
   { id: "pen", icon: Pen, label: "Pen" },
@@ -32,74 +35,124 @@ export function Toolbar() {
     setTool,
     activePageIndex,
     pages,
+    addPage,
     undo,
     redo,
     canUndo,
     canRedo,
+    drawWithTouch,
+    toggleDrawWithTouch,
   } = useWhiteboardStore();
 
   return (
-    <div className="pointer-events-none fixed top-4 left-1/2 z-50 -translate-x-1/2">
-      <div className="pointer-events-auto liquid-glass px-3 py-2">
-        <HStack gap="1" align="center">
-          {/* ── Drawing Tools ── */}
-          {tools.map(({ id, icon: Icon, label }) => (
-            <IconButton
-              key={id}
-              aria-label={label}
-              variant="ghost"
-              size="sm"
-              className={activeTool === id ? "tool-btn-active" : ""}
-              onClick={() => setTool(id)}
-              rounded="xl"
-              title={label}
-            >
-              <Icon size={18} />
-            </IconButton>
-          ))}
-
-          <Separator orientation="vertical" height="6" />
-
-          {/* ── Color Picker ── */}
-          <ColorPicker />
-
-          {/* ── Stroke Width ── */}
-          <StrokeWidthPicker />
-
-          <Separator orientation="vertical" height="6" />
-
-          {/* ── Undo / Redo ── */}
+    <div className="liquid-glass p-2 sm:p-2.5 px-3.5 sm:px-5 shadow-lg">
+      <HStack gap={{ base: "1.5", sm: "2" }} align="center">
+        {/* ── Drawing Tools ── */}
+        {tools.map(({ id, icon: Icon, label }) => (
           <IconButton
-            aria-label="Undo"
+            key={id}
+            aria-label={label}
             variant="ghost"
-            size="sm"
-            onClick={() => undo(activePageIndex)}
-            disabled={!canUndo(activePageIndex)}
+            size="md"
+            className={`h-10 w-10 p-2 ${
+              activeTool === id ? "tool-btn-active" : ""
+            }`}
+            onClick={() => setTool(id)}
             rounded="xl"
-            title="Undo"
+            title={label}
           >
-            <Undo2 size={18} />
+            <Icon size={19} />
           </IconButton>
-          <IconButton
-            aria-label="Redo"
-            variant="ghost"
-            size="sm"
-            onClick={() => redo(activePageIndex)}
-            disabled={!canRedo(activePageIndex)}
-            rounded="xl"
-            title="Redo"
-          >
-            <Redo2 size={18} />
-          </IconButton>
+        ))}
 
-          <Separator orientation="vertical" height="6" />
+        <div className="toolbar-separator mx-1" />
 
-          {/* ── Page Indicator ── */}
-          <Text fontSize="xs" color="gray.500" px="2" whiteSpace="nowrap">
-            {activePageIndex + 1} / {pages.length}
-          </Text>
-        </HStack>
-      </div>
+        {/* ── Color Picker ── */}
+        <ColorPicker />
+
+        {/* ── Stroke Width ── */}
+        <StrokeWidthPicker />
+
+        <div className="toolbar-separator mx-1" />
+
+        {/* ── Undo / Redo ── */}
+        <IconButton
+          aria-label="Undo"
+          variant="ghost"
+          size="md"
+          onClick={() => undo(activePageIndex)}
+          disabled={!canUndo(activePageIndex)}
+          rounded="xl"
+          title="Undo"
+          className="h-10 w-10 p-2 disabled:opacity-30"
+        >
+          <Undo2 size={19} />
+        </IconButton>
+        <IconButton
+          aria-label="Redo"
+          variant="ghost"
+          size="md"
+          onClick={() => redo(activePageIndex)}
+          disabled={!canRedo(activePageIndex)}
+          rounded="xl"
+          title="Redo"
+          className="h-10 w-10 p-2 disabled:opacity-30"
+        >
+          <Redo2 size={19} />
+        </IconButton>
+
+        <div className="toolbar-separator mx-1" />
+
+        {/* ── Finger Draw / Pencil-Only Mode Toggle ── */}
+        <IconButton
+          aria-label={
+            drawWithTouch
+              ? "Finger Draw Enabled (Tap for Pencil-Only)"
+              : "Pencil-Only Mode (Tap to enable Finger Draw)"
+          }
+          variant="ghost"
+          size="md"
+          className={`h-10 w-10 p-2 ${drawWithTouch ? "tool-btn-active" : ""}`}
+          onClick={toggleDrawWithTouch}
+          rounded="xl"
+          title={
+            drawWithTouch
+              ? "Finger Draw: ON (Tap for Pencil-Only / Finger-Scroll)"
+              : "Pencil-Only: ON (Finger scrolls only)"
+          }
+        >
+          <Hand size={19} />
+        </IconButton>
+
+        {/* ── Add Page Button ── */}
+        <IconButton
+          aria-label="Add Page"
+          variant="ghost"
+          size="md"
+          onClick={addPage}
+          rounded="xl"
+          title="Add Page (or scroll down)"
+          className="h-10 w-10 p-2"
+        >
+          <Plus size={19} />
+        </IconButton>
+
+        <div className="toolbar-separator mx-1" />
+
+        {/* ── Dark / Light Theme Toggle ── */}
+        <ThemeToggle />
+
+        <div className="toolbar-separator mx-1" />
+
+        {/* ── Page Indicator ── */}
+        <Text
+          fontSize="xs"
+          className="px-2.5 font-semibold tracking-wide"
+          whiteSpace="nowrap"
+        >
+          {activePageIndex + 1} / {pages.length}
+        </Text>
+      </HStack>
     </div>
   );
 }

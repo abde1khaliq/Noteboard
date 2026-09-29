@@ -5,7 +5,8 @@ import { useWhiteboardStore } from "@/store/whiteboard-store";
 
 const COLORS = [
   "#000000",
-  "#6b7280",
+  "#ffffff",
+  "#64748b",
   "#ef4444",
   "#f97316",
   "#eab308",
@@ -23,12 +24,13 @@ export function ColorPicker() {
         <IconButton
           aria-label="Color"
           variant="ghost"
-          size="sm"
+          size="md"
           rounded="xl"
           title="Color"
+          className="h-10 w-10 p-2"
         >
           <div
-            className="h-4 w-4 rounded-full border border-gray-300"
+            className="h-5 w-5 rounded-full border-2 border-white/70 shadow-md transition-transform hover:scale-110"
             style={{ backgroundColor: strokeColor }}
           />
         </IconButton>
@@ -36,20 +38,18 @@ export function ColorPicker() {
       <Portal>
         <Popover.Positioner>
           <Popover.Content
-            className="liquid-glass"
-            p="3"
-            rounded="2xl"
+            className="liquid-glass z-[100] p-3 shadow-2xl !rounded-2xl"
             w="auto"
           >
-            <HStack gap="2" flexWrap="wrap" justify="center">
+            <HStack gap="2" flexWrap="wrap" justify="center" maxW="200px">
               {COLORS.map((color) => (
                 <button
                   key={color}
                   onClick={() => setColor(color)}
-                  className={`h-7 w-7 rounded-full border-2 transition-transform hover:scale-110 ${
+                  className={`h-7 w-7 rounded-full border-2 transition-transform hover:scale-110 shadow-sm ${
                     strokeColor === color
-                      ? "scale-110 border-blue-500"
-                      : "border-transparent"
+                      ? "scale-110 border-blue-500 ring-2 ring-blue-400/50"
+                      : "border-black/20 dark:border-white/20"
                   }`}
                   style={{ backgroundColor: color }}
                   aria-label={`Select color ${color}`}
@@ -57,12 +57,12 @@ export function ColorPicker() {
               ))}
             </HStack>
             {/* Custom color input */}
-            <div className="mt-2 flex justify-center">
+            <div className="mt-3 flex justify-center border-t border-white/10 dark:border-black/10 pt-2">
               <input
                 type="color"
                 value={strokeColor}
                 onChange={(e) => setColor(e.target.value)}
-                className="h-8 w-full cursor-pointer rounded-lg"
+                className="h-8 w-full cursor-pointer rounded-lg border-0 bg-transparent"
               />
             </div>
           </Popover.Content>

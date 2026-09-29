@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useCallback } from "react";
+import { Plus } from "lucide-react";
 import { CanvasPage } from "./canvas-page";
 import { useWhiteboardStore } from "@/store/whiteboard-store";
 
@@ -8,49 +9,44 @@ export function Whiteboard() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { pages, addPage, setActivePage } = useWhiteboardStore();
 
-  // ── Scroll-to-add-page ──
+  // ── Track active page on snap scroll ──
   const handleScroll = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;
 
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const scrollBottom = scrollHeight - scrollTop - clientHeight;
+    const { scrollTop, clientHeight } = container;
+    if (clientHeight === 0) return;
 
-    // Add a new page when user scrolls near the bottom
-    if (scrollBottom < 80) {
-      addPage();
+    const pageIndex = Math.round(scrollTop / clientHeight);
+    if (pageIndex >= 0 && pageIndex < pages.length) {
+      setActivePage(pageIndex);
     }
-
-    // Determine active page based on which page is most visible
-    const children = Array.from(container.children) as HTMLElement[];
-    for (let i = 0; i < children.length; i++) {
-      const child = children[i];
-      const childTop = child.offsetTop - container.offsetTop;
-      const childBottom = childTop + child.offsetHeight;
-      const viewMid = scrollTop + clientHeight / 2;
-
-      if (viewMid >= childTop && viewMid < childBottom) {
-        setActivePage(i);
-        break;
-      }
-    }
-  }, [addPage, setActivePage]);
+  }, [pages.length, setActivePage]);
 
   return (
     <div
       ref={scrollRef}
-      className="whiteboard-scroll flex flex-col items-center pb-40"
+      className="whiteboard-scroll w-full h-full overflow-y-auto"
       onScroll={handleScroll}
     >
       {pages.map((page, index) => (
-        <CanvasPage key={page.id} pageIndex={index} />
+        <div
+          key={page.id}
+          className="canvas-page w-full h-full p-2 sm:p-3 flex flex-col items-center justify-center shrink-0"
+        >
+          <CanvasPage pageIndex={index} />
+        </div>
       ))}
 
-      {/* Scroll sentinel / "Add page" hint */}
-      <div className="flex items-center justify-center py-12 opacity-30">
-        <p className="text-sm text-gray-400">
-          ↓ Scroll down to add a new page
-        </p>
+      {/* ── Add Page Slide ── */}
+      <div className="canvas-page w-full h-full flex flex-col items-center justify-center p-4 shrink-0">
+        <button
+          onClick={addPage}
+          className="flex items-center gap-3 px-8 py-4 rounded-3xl bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 font-semibold text-base transition-all duration-200 border-2 border-dashed border-black/15 dark:border-white/15 shadow-sm active:scale-95 cursor-pointer"
+        >
+          <Plus size={22} />
+          <span>Add New Page</span>
+        </button>
       </div>
     </div>
   );

@@ -63,6 +63,10 @@ interface WhiteboardState {
   setColor: (color: string) => void;
   setWidth: (width: number) => void;
 
+  // Touch vs Pencil mode
+  drawWithTouch: boolean;
+  toggleDrawWithTouch: () => void;
+
   // Pages
   pages: Page[];
   activePageIndex: number;
@@ -84,10 +88,12 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   activeTool: "pen",
   strokeColor: "#000000",
   strokeWidth: 3,
+  drawWithTouch: true,
 
   setTool: (tool) => set({ activeTool: tool }),
   setColor: (color) => set({ strokeColor: color }),
   setWidth: (width) => set({ strokeWidth: width }),
+  toggleDrawWithTouch: () => set((s) => ({ drawWithTouch: !s.drawWithTouch })),
 
   pages: [{ id: crypto.randomUUID(), actions: [] }],
   activePageIndex: 0,
