@@ -2,6 +2,7 @@
 
 import { HStack, IconButton, Text } from "@chakra-ui/react";
 import {
+  MousePointer,
   Pen,
   Eraser,
   Highlighter,
@@ -13,6 +14,9 @@ import {
   Redo2,
   Hand,
   Plus,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from "lucide-react";
 import { useWhiteboardStore, type Tool } from "@/store/whiteboard-store";
 import { ColorPicker } from "./color-picker";
@@ -20,6 +24,7 @@ import { StrokeWidthPicker } from "./stroke-width-picker";
 import { ThemeToggle } from "./theme-toggle";
 
 const tools: { id: Tool; icon: React.ElementType; label: string }[] = [
+  { id: "select", icon: MousePointer, label: "Select (Pan & Zoom)" },
   { id: "pen", icon: Pen, label: "Pen" },
   { id: "eraser", icon: Eraser, label: "Eraser" },
   { id: "highlighter", icon: Highlighter, label: "Highlighter" },
@@ -42,12 +47,16 @@ export function Toolbar() {
     canRedo,
     drawWithTouch,
     toggleDrawWithTouch,
+    zoom,
+    zoomIn,
+    zoomOut,
+    resetZoom,
   } = useWhiteboardStore();
 
   return (
     <div className="liquid-glass p-2 sm:p-2.5 px-3.5 sm:px-5 shadow-lg">
       <HStack gap={{ base: "1.5", sm: "2" }} align="center">
-        {/* ── Drawing Tools ── */}
+        {/* ── Drawing & Select Tools ── */}
         {tools.map(({ id, icon: Icon, label }) => (
           <IconButton
             key={id}
@@ -72,6 +81,43 @@ export function Toolbar() {
 
         {/* ── Stroke Width ── */}
         <StrokeWidthPicker />
+
+        <div className="toolbar-separator mx-1" />
+
+        {/* ── Zoom Controls ── */}
+        <IconButton
+          aria-label="Zoom Out"
+          variant="ghost"
+          size="md"
+          onClick={zoomOut}
+          disabled={zoom <= 0.4}
+          rounded="xl"
+          title="Zoom Out (or scroll/pinch)"
+          className="h-10 w-10 p-2 disabled:opacity-30"
+        >
+          <ZoomOut size={19} />
+        </IconButton>
+
+        <button
+          onClick={resetZoom}
+          title="Reset Zoom to 100%"
+          className="px-2 py-1 text-xs font-semibold rounded-lg hover:bg-white/10 dark:hover:bg-black/10 transition-colors cursor-pointer"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+
+        <IconButton
+          aria-label="Zoom In"
+          variant="ghost"
+          size="md"
+          onClick={zoomIn}
+          disabled={zoom >= 3.0}
+          rounded="xl"
+          title="Zoom In (or scroll/pinch)"
+          className="h-10 w-10 p-2 disabled:opacity-30"
+        >
+          <ZoomIn size={19} />
+        </IconButton>
 
         <div className="toolbar-separator mx-1" />
 

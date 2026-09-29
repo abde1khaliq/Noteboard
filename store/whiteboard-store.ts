@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 // ── Types ──
 export type Tool =
+  | "select"
   | "pen"
   | "eraser"
   | "highlighter"
@@ -63,6 +64,13 @@ interface WhiteboardState {
   setColor: (color: string) => void;
   setWidth: (width: number) => void;
 
+  // Zoom state
+  zoom: number;
+  setZoom: (zoom: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetZoom: () => void;
+
   // Touch vs Pencil mode
   drawWithTouch: boolean;
   toggleDrawWithTouch: () => void;
@@ -88,11 +96,27 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   activeTool: "pen",
   strokeColor: "#000000",
   strokeWidth: 3,
-  drawWithTouch: true,
+  zoom: 1,
 
   setTool: (tool) => set({ activeTool: tool }),
   setColor: (color) => set({ strokeColor: color }),
   setWidth: (width) => set({ strokeWidth: width }),
+
+  setZoom: (zoom) =>
+    set({
+      zoom: Math.min(Math.max(Number(zoom.toFixed(2)), 0.4), 3.0),
+    }),
+  zoomIn: () =>
+    set((s) => ({
+      zoom: Math.min(Number((s.zoom + 0.15).toFixed(2)), 3.0),
+    })),
+  zoomOut: () =>
+    set((s) => ({
+      zoom: Math.max(Number((s.zoom - 0.15).toFixed(2)), 0.4),
+    })),
+  resetZoom: () => set({ zoom: 1 }),
+
+  drawWithTouch: true,
   toggleDrawWithTouch: () => set((s) => ({ drawWithTouch: !s.drawWithTouch })),
 
   pages: [{ id: crypto.randomUUID(), actions: [] }],
