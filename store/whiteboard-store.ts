@@ -70,8 +70,27 @@ export interface Page {
   actions: DrawAction[];
 }
 
-// Maximum history snapshots to keep per page to prevent memory growth
 const MAX_HISTORY = 40;
+
+function getStrokeBoundingBox(stroke: Stroke): { x: number; y: number; w: number; h: number } {
+  if (stroke.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+  let minX = stroke.points[0].x;
+  let maxX = stroke.points[0].x;
+  let minY = stroke.points[0].y;
+  let maxY = stroke.points[0].y;
+  for (const p of stroke.points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return {
+    x: minX,
+    y: minY,
+    w: Math.max(1, maxX - minX),
+    h: Math.max(1, maxY - minY),
+  };
+}
 
 // ── Store ──
 interface WhiteboardState {
@@ -79,11 +98,13 @@ interface WhiteboardState {
   activeTool: Tool;
   selectedShape: ShapeType;
   selectedId: string | null;
+  selectedIds: string[];
   strokeColor: string;
   strokeWidth: number;
   setTool: (tool: Tool) => void;
   setSelectedShape: (shape: ShapeType) => void;
   setSelectedId: (id: string | null) => void;
+  setSelectedIds: (ids: string[]) => void;
   setColor: (color: string) => void;
   setWidth: (width: number) => void;
 
@@ -125,6 +146,7 @@ interface WhiteboardState {
   bringForward: (pageIndex: number, actionId: string) => void;
   sendBackward: (pageIndex: number, actionId: string) => void;
   deleteSelectedAction: (pageIndex: number) => void;
+  deleteActions: (pageIndex: number, actionIds: string[]) => void;
 
   // Snapshot-based Undo / Redo per page
   undoHistory: Map<string, DrawAction[][]>;
@@ -143,6 +165,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   activeTool: "pen",
   selectedShape: "rectangle",
   selectedId: null,
+  selectedIds: [],
   strokeColor: "#202124",
   strokeWidth: 4,
   zoom: 1,
@@ -151,9 +174,19 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     set((state) => ({
       activeTool: tool,
       selectedId: tool === "select" ? state.selectedId : null,
+      selectedIds: tool === "select" ? state.selectedIds : [],
     })),
   setSelectedShape: (shape) => set({ selectedShape: shape }),
-  setSelectedId: (id) => set({ selectedId: id }),
+  setSelectedId: (id) =>
+    set({
+      selectedId: id,
+      selectedIds: id ? [id] : [],
+    }),
+  setSelectedIds: (ids) =>
+    set({
+      selectedIds: ids,
+      selectedId: ids.length > 0 ? ids[0] : null,
+    }),
   setColor: (color) => set({ strokeColor: color }),
   setWidth: (width) => set({ strokeWidth: width }),
 
@@ -179,7 +212,8 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       pages: [...state.pages, { id: crypto.randomUUID(), actions: [] }],
     })),
 
-  setActivePage: (index) => set({ activePageIndex: index, selectedId: null }),
+  setActivePage: (index) =>
+    set({ activePageIndex: index, selectedId: null, selectedIds: [] }),
 
   clearPage: (pageIndex) =>
     set((state) => {
@@ -198,7 +232,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       redoHistory.delete(page.id);
 
       pages[pageIndex] = { ...page, actions: [] };
-      return { pages, undoHistory, redoHistory, selectedId: null };
+      return { pages, undoHistory, redoHistory, selectedId: null, selectedIds: [] };
     }),
 
   addAction: (pageIndex, action) =>
@@ -252,6 +286,19 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
             endY: act.endY + dy,
           };
         }
+        if (act.tool === "pen" || act.tool === "highlighter" || act.tool === "eraser") {
+          const b = getStrokeBoundingBox(act as Stroke);
+          const dx = x - b.x;
+          const dy = y - b.y;
+          return {
+            ...act,
+            points: (act as Stroke).points.map((p) => ({
+              ...p,
+              x: p.x + dx,
+              y: p.y + dy,
+            })),
+          };
+        }
         return act;
       });
 
@@ -296,6 +343,19 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
             startY: isYReversed ? y + height : y,
             endX: isXReversed ? x : x + width,
             endY: isYReversed ? y : y + height,
+          };
+        }
+        if (act.tool === "pen" || act.tool === "highlighter" || act.tool === "eraser") {
+          const b = getStrokeBoundingBox(act as Stroke);
+          const scaleX = b.w > 0 ? width / b.w : 1;
+          const scaleY = b.h > 0 ? height / b.h : 1;
+          return {
+            ...act,
+            points: (act as Stroke).points.map((p) => ({
+              ...p,
+              x: x + (p.x - b.x) * scaleX,
+              y: y + (p.y - b.y) * scaleY,
+            })),
           };
         }
         return act;
@@ -375,12 +435,12 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
 
   deleteSelectedAction: (pageIndex) =>
     set((state) => {
-      if (!state.selectedId) return state;
+      const targetIds = state.selectedIds.length > 0 ? state.selectedIds : state.selectedId ? [state.selectedId] : [];
+      if (targetIds.length === 0) return state;
+
       const pages = [...state.pages];
       const page = pages[pageIndex];
       if (!page) return state;
-      const itemToDelete = page.actions.find((a) => a.id === state.selectedId);
-      if (!itemToDelete) return state;
 
       const undoHistory = new Map(state.undoHistory);
       const redoHistory = new Map(state.redoHistory);
@@ -391,11 +451,36 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       );
       redoHistory.delete(page.id);
 
+      const idSet = new Set(targetIds);
       pages[pageIndex] = {
         ...page,
-        actions: page.actions.filter((a) => a.id !== state.selectedId),
+        actions: page.actions.filter((a) => !idSet.has(a.id)),
       };
-      return { pages, undoHistory, redoHistory, selectedId: null };
+      return { pages, undoHistory, redoHistory, selectedId: null, selectedIds: [] };
+    }),
+
+  deleteActions: (pageIndex, actionIds) =>
+    set((state) => {
+      if (actionIds.length === 0) return state;
+      const pages = [...state.pages];
+      const page = pages[pageIndex];
+      if (!page) return state;
+
+      const undoHistory = new Map(state.undoHistory);
+      const redoHistory = new Map(state.redoHistory);
+      const pastSnapshots = undoHistory.get(page.id) || [];
+      undoHistory.set(
+        page.id,
+        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
+      );
+      redoHistory.delete(page.id);
+
+      const idSet = new Set(actionIds);
+      pages[pageIndex] = {
+        ...page,
+        actions: page.actions.filter((a) => !idSet.has(a.id)),
+      };
+      return { pages, undoHistory, redoHistory, selectedId: null, selectedIds: [] };
     }),
 
   undoHistory: new Map(),
@@ -427,6 +512,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
         undoHistory: newUndoHistory,
         redoHistory: newRedoHistory,
         selectedId: null,
+        selectedIds: [],
       };
     }),
 
@@ -456,6 +542,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
         undoHistory: newUndoHistory,
         redoHistory: newRedoHistory,
         selectedId: null,
+        selectedIds: [],
       };
     }),
 

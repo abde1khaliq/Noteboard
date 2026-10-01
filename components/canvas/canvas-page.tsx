@@ -34,6 +34,14 @@ interface EditingTextState {
 
 type ResizeHandle = "nw" | "ne" | "se" | "sw";
 
+function distToSegmentSquared(p: Point, v: Point, w: Point) {
+  const l2 = (v.x - w.x) ** 2 + (v.y - w.y) ** 2;
+  if (l2 === 0) return (p.x - v.x) ** 2 + (p.y - v.y) ** 2;
+  let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return (p.x - (v.x + t * (w.x - v.x))) ** 2 + (p.y - (v.y + t * (w.y - v.y))) ** 2;
+}
+
 export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -42,10 +50,14 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const isPanning = useRef(false);
   const isDraggingItem = useRef(false);
   const isResizing = useRef(false);
+  const isMarqueeSelecting = useRef(false);
   const activeResizeHandle = useRef<ResizeHandle | null>(null);
   const isCommittingText = useRef(false);
   const rafId = useRef<number>(0);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
+
+  const marqueeStart = useRef<Point | null>(null);
+  const marqueeCurrent = useRef<Point | null>(null);
 
   const resizeStartBounds = useRef<{ x: number; y: number; w: number; h: number }>({
     x: 0,
@@ -54,7 +66,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     h: 0,
   });
   const resizeStartPoint = useRef<Point>({ x: 0, y: 0, pressure: 0.5 });
-  const dragItemStartPos = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const dragItemsStartPositions = useRef<{ id: string; startX: number; startY: number }[]>([]);
   const dragStartPoint = useRef<Point>({ x: 0, y: 0, pressure: 0.5 });
   const dragStart = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const initialScroll = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
@@ -71,7 +83,9 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   // Granular Store Subscriptions
   const activeTool = useWhiteboardStore((s) => s.activeTool);
   const selectedId = useWhiteboardStore((s) => s.selectedId);
+  const selectedIds = useWhiteboardStore((s) => s.selectedIds);
   const setSelectedId = useWhiteboardStore((s) => s.setSelectedId);
+  const setSelectedIds = useWhiteboardStore((s) => s.setSelectedIds);
   const updateActionPosition = useWhiteboardStore((s) => s.updateActionPosition);
   const updateActionBounds = useWhiteboardStore((s) => s.updateActionBounds);
   const updateActionText = useWhiteboardStore((s) => s.updateActionText);
@@ -95,11 +109,21 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     scrollContainerRef.current = document.querySelector(".whiteboard-scroll");
   }, []);
 
-  // Selected Item calculation
-  const selectedItem = useMemo(() => {
-    return pageActions.find((a) => a.id === selectedId) || null;
-  }, [pageActions, selectedId]);
+  // Selected Items calculation (handles single item or multi-cropped items)
+  const selectedItems = useMemo(() => {
+    if (selectedIds.length > 0) {
+      return pageActions.filter((a) => selectedIds.includes(a.id));
+    }
+    if (selectedId) {
+      const itm = pageActions.find((a) => a.id === selectedId);
+      return itm ? [itm] : [];
+    }
+    return [];
+  }, [pageActions, selectedId, selectedIds]);
 
+  const selectedItem = selectedItems.length === 1 ? selectedItems[0] : null;
+
+  // Accurate Bounding Box Calculation for ALL items (strokes, shapes, text, images)
   const getItemBounds = useCallback(
     (item: DrawAction): { x: number; y: number; w: number; h: number } => {
       if (item.tool === "image") {
@@ -133,15 +157,58 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           h: Math.max(10, maxY - minY),
         };
       }
+      if (item.tool === "pen" || item.tool === "highlighter" || item.tool === "eraser") {
+        const strk = item as Stroke;
+        if (strk.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+        let minX = strk.points[0].x;
+        let maxX = strk.points[0].x;
+        let minY = strk.points[0].y;
+        let maxY = strk.points[0].y;
+        for (let i = 1; i < strk.points.length; i++) {
+          const p = strk.points[i];
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        }
+        const pad = Math.max(6, strk.width * 1.5);
+        return {
+          x: minX - pad,
+          y: minY - pad,
+          w: Math.max(12, maxX - minX + pad * 2),
+          h: Math.max(12, maxY - minY + pad * 2),
+        };
+      }
       return { x: 0, y: 0, w: 0, h: 0 };
     },
     []
   );
 
+  // Combined Bounds for all active selections
   const selectedBounds = useMemo(() => {
-    if (!selectedItem) return { x: 0, y: 0, w: 0, h: 0 };
-    return getItemBounds(selectedItem);
-  }, [selectedItem, getItemBounds]);
+    if (selectedItems.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+    if (selectedItems.length === 1) return getItemBounds(selectedItems[0]);
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (const item of selectedItems) {
+      const b = getItemBounds(item);
+      if (b.x < minX) minX = b.x;
+      if (b.x + b.w > maxX) maxX = b.x + b.w;
+      if (b.y < minY) minY = b.y;
+      if (b.y + b.h > maxY) maxY = b.y + b.h;
+    }
+
+    return {
+      x: minX,
+      y: minY,
+      w: Math.max(12, maxX - minX),
+      h: Math.max(12, maxY - minY),
+    };
+  }, [selectedItems, getItemBounds]);
 
   // ── Text Editing Handlers ──
   const startEditingText = useCallback(
@@ -228,7 +295,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (selectedId) {
+        if (selectedItems.length > 0) {
           e.preventDefault();
           deleteSelectedAction(pageIndex);
         }
@@ -238,7 +305,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, pageIndex, deleteSelectedAction, setSelectedId]);
+  }, [selectedItems.length, pageIndex, deleteSelectedAction, setSelectedId]);
 
   // ── Freehand Stroke Drawing ──
   const drawFreehandStroke = useCallback(
@@ -454,7 +521,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     offCtx.restore();
   }, [pageActions, drawAction, editingText]);
 
-  // ── Redraw Main Screen Canvas from Offscreen Cache + Active Overlays ──
+  // ── Redraw Main Screen Canvas from Offscreen Cache + Selection & Marquee ──
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -486,42 +553,63 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     }
     ctx.restore();
 
-    // Draw selection outline and corner resize handles if selected
-    if (selectedId && (!editingText || editingText.id !== selectedId)) {
-      const selectedItem = pageActions.find((a) => a.id === selectedId);
-      if (selectedItem) {
-        const bounds = getItemBounds(selectedItem);
+    // Draw live marquee / crop selection box
+    if (isMarqueeSelecting.current && marqueeStart.current && marqueeCurrent.current) {
+      const mx = Math.min(marqueeStart.current.x, marqueeCurrent.current.x);
+      const my = Math.min(marqueeStart.current.y, marqueeCurrent.current.y);
+      const mw = Math.abs(marqueeCurrent.current.x - marqueeStart.current.x);
+      const mh = Math.abs(marqueeCurrent.current.y - marqueeStart.current.y);
 
-        ctx.save();
-        ctx.scale(dpr, dpr);
-        ctx.strokeStyle = "#3b82f6";
-        ctx.lineWidth = 1.8;
-        ctx.setLineDash([5, 4]);
-        ctx.strokeRect(bounds.x - 4, bounds.y - 4, bounds.w + 8, bounds.h + 8);
-
-        ctx.setLineDash([]);
-        ctx.fillStyle = "#ffffff";
-        ctx.strokeStyle = "#2563eb";
-        ctx.lineWidth = 2.2;
-
-        const handles = [
-          { x: bounds.x - 4, y: bounds.y - 4 },
-          { x: bounds.x + bounds.w + 4, y: bounds.y - 4 },
-          { x: bounds.x + bounds.w + 4, y: bounds.y + bounds.h + 4 },
-          { x: bounds.x - 4, y: bounds.y + bounds.h + 4 },
-        ];
-
-        for (const h of handles) {
-          ctx.beginPath();
-          ctx.arc(h.x, h.y, 5.5, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-        }
-
-        ctx.restore();
-      }
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.fillStyle = "rgba(59, 130, 246, 0.12)";
+      ctx.fillRect(mx, my, mw, mh);
+      ctx.strokeStyle = "#3b82f6";
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(mx, my, mw, mh);
+      ctx.restore();
     }
-  }, [pageActions, selectedId, getItemBounds, editingText, renderOffscreen]);
+
+    // Draw selection outline and corner resize handles if items are selected
+    if (selectedItems.length > 0 && (!editingText || editingText.id !== selectedId)) {
+      const bounds = selectedBounds;
+
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.strokeStyle = "#3b82f6";
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(bounds.x - 4, bounds.y - 4, bounds.w + 8, bounds.h + 8);
+
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 2.2;
+
+      const handles = [
+        { x: bounds.x - 4, y: bounds.y - 4 },
+        { x: bounds.x + bounds.w + 4, y: bounds.y - 4 },
+        { x: bounds.x + bounds.w + 4, y: bounds.y + bounds.h + 4 },
+        { x: bounds.x - 4, y: bounds.y + bounds.h + 4 },
+      ];
+
+      for (const h of handles) {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+  }, [
+    selectedItems.length,
+    selectedId,
+    selectedBounds,
+    editingText,
+    renderOffscreen,
+  ]);
 
   // RequestAnimationFrame Batching for buttery-smooth 60fps renders
   const scheduleRedraw = useCallback(() => {
@@ -585,18 +673,28 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     return null;
   };
 
-  // Hit test for item body
+  // Hit test for item body (Accurately hits drawings, strokes, shapes, text, images)
   const hitTestItem = (point: Point): DrawAction | null => {
     for (let i = pageActions.length - 1; i >= 0; i--) {
       const item = pageActions[i];
       const bounds = getItemBounds(item);
       if (
-        point.x >= bounds.x - 6 &&
-        point.x <= bounds.x + bounds.w + 6 &&
-        point.y >= bounds.y - 6 &&
-        point.y <= bounds.y + bounds.h + 6
+        point.x >= bounds.x &&
+        point.x <= bounds.x + bounds.w &&
+        point.y >= bounds.y &&
+        point.y <= bounds.y + bounds.h
       ) {
-        return item;
+        if (item.tool === "pen" || item.tool === "highlighter" || item.tool === "eraser") {
+          const strk = item as Stroke;
+          const maxDistSq = Math.max(10, strk.width * 2 + 10) ** 2;
+          for (let j = 0; j < strk.points.length - 1; j++) {
+            if (distToSegmentSquared(point, strk.points[j], strk.points[j + 1]) <= maxDistSq) {
+              return item;
+            }
+          }
+        } else {
+          return item;
+        }
       }
     }
     return null;
@@ -635,6 +733,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       isDrawing.current = false;
       isDraggingItem.current = false;
       isResizing.current = false;
+      isMarqueeSelecting.current = false;
       isPanning.current = true;
       setIsGrabbing(true);
       const pts = Array.from(activePointers.current.values());
@@ -653,12 +752,12 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
-    // SELECT TOOL
+    // SELECT / CROP TOOL
     if (activeTool === "select") {
       const point = getCanvasPoint(e);
 
       // 1. Check if clicking on active resize handle
-      if (selectedId && selectedItem) {
+      if (selectedItems.length > 0) {
         const handle = hitTestResizeHandle(point, selectedBounds);
         if (handle) {
           e.preventDefault();
@@ -671,7 +770,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         }
       }
 
-      // 2. Check if clicking on any item body
+      // 2. Check if clicking on any drawn item or stroke
       const hit = hitTestItem(point);
       if (hit) {
         // Double-click on text item to edit directly
@@ -690,27 +789,42 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
         e.preventDefault();
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
-        setSelectedId(hit.id);
+
+        // If clicking on an already selected item in multi-select, keep group; else select single item
+        if (!selectedIds.includes(hit.id)) {
+          setSelectedId(hit.id);
+        }
+
         isDraggingItem.current = true;
         dragStartPoint.current = point;
 
-        // Store item start position cleanly without jump
-        if (
-          hit.tool === "rectangle" ||
-          hit.tool === "circle" ||
-          hit.tool === "line" ||
-          hit.tool === "arrow"
-        ) {
-          const shp = hit as ShapeStroke;
-          dragItemStartPos.current = { x: shp.startX, y: shp.startY };
-        } else {
-          const b = getItemBounds(hit);
-          dragItemStartPos.current = { x: b.x, y: b.y };
-        }
+        // Store start positions for all currently selected items
+        const targetItems = selectedIds.includes(hit.id)
+          ? selectedItems
+          : [hit];
+
+        dragItemsStartPositions.current = targetItems.map((item) => {
+          if (
+            item.tool === "rectangle" ||
+            item.tool === "circle" ||
+            item.tool === "line" ||
+            item.tool === "arrow"
+          ) {
+            const shp = item as ShapeStroke;
+            return { id: item.id, startX: shp.startX, startY: shp.startY };
+          }
+          const b = getItemBounds(item);
+          return { id: item.id, startX: b.x, startY: b.y };
+        });
         return;
       }
 
-      // 3. Clicked empty space: deselect item without panning board
+      // 3. Clicked empty canvas: start drag crop / marquee box selection
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      isMarqueeSelecting.current = true;
+      marqueeStart.current = point;
+      marqueeCurrent.current = point;
       setSelectedId(null);
       return;
     }
@@ -785,16 +899,17 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       !isDraggingItem.current &&
       !isResizing.current &&
       !isPanning.current &&
+      !isMarqueeSelecting.current &&
       canvas
     ) {
       const point = getCanvasPoint(e);
-      if (selectedId && selectedItem) {
+      if (selectedItems.length > 0) {
         const handle = hitTestResizeHandle(point, selectedBounds);
         if (handle === "nw" || handle === "se") {
           canvas.style.cursor = "nwse-resize";
         } else if (handle === "ne" || handle === "sw") {
           canvas.style.cursor = "nesw-resize";
-        } else if (hitTestItem(point)?.id === selectedId) {
+        } else if (hitTestItem(point)) {
           canvas.style.cursor = "move";
         } else {
           canvas.style.cursor = "default";
@@ -802,7 +917,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       } else if (hitTestItem(point)) {
         canvas.style.cursor = "pointer";
       } else {
-        canvas.style.cursor = "default";
+        canvas.style.cursor = "crosshair";
       }
     }
 
@@ -834,8 +949,16 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
-    // Scaling / Resizing an Item via Corner Handle
-    if (isResizing.current && activeResizeHandle.current && selectedId) {
+    // Live Marquee Box / Crop Selection Drag
+    if (isMarqueeSelecting.current && marqueeStart.current) {
+      e.preventDefault();
+      marqueeCurrent.current = getCanvasPoint(e);
+      redrawCanvas();
+      return;
+    }
+
+    // Scaling / Resizing Item(s) via Corner Handle
+    if (isResizing.current && activeResizeHandle.current && selectedItem) {
       e.preventDefault();
       const point = getCanvasPoint(e);
       const handle = activeResizeHandle.current;
@@ -843,7 +966,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       const dx = point.x - resizeStartPoint.current.x;
       const dy = point.y - resizeStartPoint.current.y;
 
-      const isImg = selectedItem?.tool === "image";
+      const isImg = selectedItem.tool === "image";
       const aspect = b.w / Math.max(1, b.h);
 
       let newX = b.x;
@@ -852,26 +975,26 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       let newH = b.h;
 
       if (handle === "se") {
-        newW = Math.max(30, b.w + dx);
-        newH = isImg ? Math.max(30, newW / aspect) : Math.max(30, b.h + dy);
+        newW = Math.max(20, b.w + dx);
+        newH = isImg ? Math.max(20, newW / aspect) : Math.max(20, b.h + dy);
       } else if (handle === "ne") {
-        newW = Math.max(30, b.w + dx);
-        newH = isImg ? Math.max(30, newW / aspect) : Math.max(30, b.h - dy);
+        newW = Math.max(20, b.w + dx);
+        newH = isImg ? Math.max(20, newW / aspect) : Math.max(20, b.h - dy);
         newY = b.y + (b.h - newH);
       } else if (handle === "sw") {
-        newW = Math.max(30, b.w - dx);
-        newH = isImg ? Math.max(30, newW / aspect) : Math.max(30, b.h + dy);
+        newW = Math.max(20, b.w - dx);
+        newH = isImg ? Math.max(20, newW / aspect) : Math.max(20, b.h + dy);
         newX = b.x + (b.w - newW);
       } else if (handle === "nw") {
-        newW = Math.max(30, b.w - dx);
-        newH = isImg ? Math.max(30, newW / aspect) : Math.max(30, b.h - dy);
+        newW = Math.max(20, b.w - dx);
+        newH = isImg ? Math.max(20, newW / aspect) : Math.max(20, b.h - dy);
         newX = b.x + (b.w - newW);
         newY = b.y + (b.h - newH);
       }
 
       updateActionBounds(
         pageIndex,
-        selectedId,
+        selectedItem.id,
         Math.round(newX),
         Math.round(newY),
         Math.round(newW),
@@ -880,15 +1003,21 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
-    // Drag Moving a Selected Item
-    if (isDraggingItem.current && selectedId) {
+    // Drag Moving Selected Item(s) / Drawings
+    if (isDraggingItem.current && dragItemsStartPositions.current.length > 0) {
       e.preventDefault();
       const point = getCanvasPoint(e);
       const dx = point.x - dragStartPoint.current.x;
       const dy = point.y - dragStartPoint.current.y;
-      const newX = dragItemStartPos.current.x + dx;
-      const newY = dragItemStartPos.current.y + dy;
-      updateActionPosition(pageIndex, selectedId, Math.round(newX), Math.round(newY));
+
+      for (const itemPos of dragItemsStartPositions.current) {
+        updateActionPosition(
+          pageIndex,
+          itemPos.id,
+          Math.round(itemPos.startX + dx),
+          Math.round(itemPos.startY + dy)
+        );
+      }
       return;
     }
 
@@ -931,7 +1060,6 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         currentPoints.current.push(getCanvasPoint(e));
       }
 
-      // Fast redraw from offscreen cache + transient stroke
       redrawCanvas();
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
@@ -1004,6 +1132,46 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
     if (isDraggingItem.current) {
       isDraggingItem.current = false;
+      dragItemsStartPositions.current = [];
+      return;
+    }
+
+    // Finish Marquee Box / Crop Selection
+    if (isMarqueeSelecting.current && marqueeStart.current && marqueeCurrent.current) {
+      isMarqueeSelecting.current = false;
+      const mx = Math.min(marqueeStart.current.x, marqueeCurrent.current.x);
+      const my = Math.min(marqueeStart.current.y, marqueeCurrent.current.y);
+      const mw = Math.abs(marqueeCurrent.current.x - marqueeStart.current.x);
+      const mh = Math.abs(marqueeCurrent.current.y - marqueeStart.current.y);
+
+      if (mw > 6 || mh > 6) {
+        const captured: DrawAction[] = [];
+        for (const item of pageActions) {
+          const b = getItemBounds(item);
+          // Check AABB intersection
+          if (
+            b.x + b.w >= mx &&
+            b.x <= mx + mw &&
+            b.y + b.h >= my &&
+            b.y <= my + mh
+          ) {
+            captured.push(item);
+          }
+        }
+        if (captured.length === 1) {
+          setSelectedId(captured[0].id);
+        } else if (captured.length > 1) {
+          setSelectedIds(captured.map((c) => c.id));
+        } else {
+          setSelectedId(null);
+        }
+      } else {
+        setSelectedId(null);
+      }
+
+      marqueeStart.current = null;
+      marqueeCurrent.current = null;
+      redrawCanvas();
       return;
     }
 
@@ -1074,11 +1242,14 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     initialPinchMid.current = null;
     isResizing.current = false;
     isDraggingItem.current = false;
+    isMarqueeSelecting.current = false;
     isPanning.current = false;
     setIsGrabbing(false);
     isDrawing.current = false;
     currentPoints.current = [];
     shapeStart.current = null;
+    marqueeStart.current = null;
+    marqueeCurrent.current = null;
     redrawCanvas();
   };
 
@@ -1104,7 +1275,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           transform: `scale(${zoom})`,
           transformOrigin: "center center",
           transition:
-            isPanning.current || isDraggingItem.current || isResizing.current
+            isPanning.current || isDraggingItem.current || isResizing.current || isMarqueeSelecting.current
               ? "none"
               : "transform 0.12s ease-out",
         }}
@@ -1180,8 +1351,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           </div>
         )}
 
-        {/* ── Contextual Tooltip Action Bar above Selected Object (Inverse-Scaled) ── */}
-        {selectedItem && activeTool === "select" && !editingText && (
+        {/* ── Contextual Pop Menu above Selected Drawing / Crop Object (Inverse-Scaled) ── */}
+        {selectedItems.length > 0 && activeTool === "select" && !editingText && (
           <div
             className="wb-tooltip absolute"
             style={{
@@ -1193,7 +1364,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
             }}
             onPointerDown={(e) => e.stopPropagation()}
           >
-            {selectedItem.tool === "text" && (
+            {selectedItem?.tool === "text" && (
               <>
                 <button
                   type="button"
@@ -1223,34 +1394,38 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
             <button
               type="button"
               className="wb-tool wb-tool-delete"
-              title="Delete item"
-              aria-label="Delete item"
+              title={selectedItems.length > 1 ? `Delete ${selectedItems.length} items` : "Delete"}
+              aria-label="Delete selected items"
               onClick={() => deleteSelectedAction(pageIndex)}
             >
               <Trash2 />
             </button>
-            <span
-              className="wb-divider"
-              style={{ height: "16px", margin: "0 2px" }}
-            />
-            <button
-              type="button"
-              className="wb-tool"
-              title="Bring forward"
-              aria-label="Bring forward"
-              onClick={() => bringForward(pageIndex, selectedItem.id)}
-            >
-              <BringToFront />
-            </button>
-            <button
-              type="button"
-              className="wb-tool"
-              title="Send backward"
-              aria-label="Send backward"
-              onClick={() => sendBackward(pageIndex, selectedItem.id)}
-            >
-              <SendToBack />
-            </button>
+            {selectedItem && (
+              <>
+                <span
+                  className="wb-divider"
+                  style={{ height: "16px", margin: "0 2px" }}
+                />
+                <button
+                  type="button"
+                  className="wb-tool"
+                  title="Bring forward"
+                  aria-label="Bring forward"
+                  onClick={() => bringForward(pageIndex, selectedItem.id)}
+                >
+                  <BringToFront />
+                </button>
+                <button
+                  type="button"
+                  className="wb-tool"
+                  title="Send backward"
+                  aria-label="Send backward"
+                  onClick={() => sendBackward(pageIndex, selectedItem.id)}
+                >
+                  <SendToBack />
+                </button>
+              </>
+            )}
             <span
               className="wb-divider"
               style={{ height: "16px", margin: "0 2px" }}
