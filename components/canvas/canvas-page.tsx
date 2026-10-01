@@ -51,6 +51,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const isDraggingItem = useRef(false);
   const isResizing = useRef(false);
   const isMarqueeSelecting = useRef(false);
+  const isMagicErasing = useRef(false);
+  const magicErasedIds = useRef<Set<string>>(new Set());
   const activeResizeHandle = useRef<ResizeHandle | null>(null);
   const isCommittingText = useRef(false);
   const rafId = useRef<number>(0);
@@ -90,6 +92,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const updateActionBounds = useWhiteboardStore((s) => s.updateActionBounds);
   const updateActionText = useWhiteboardStore((s) => s.updateActionText);
   const deleteSelectedAction = useWhiteboardStore((s) => s.deleteSelectedAction);
+  const deleteActions = useWhiteboardStore((s) => s.deleteActions);
   const bringForward = useWhiteboardStore((s) => s.bringForward);
   const sendBackward = useWhiteboardStore((s) => s.sendBackward);
   const strokeColor = useWhiteboardStore((s) => s.strokeColor);
@@ -829,6 +832,21 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
+    // MAGIC ERASER (Delete whole object on touch / drag)
+    if (activeTool === "magic-eraser") {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      isMagicErasing.current = true;
+      magicErasedIds.current = new Set();
+      const point = getCanvasPoint(e);
+      const hit = hitTestItem(point);
+      if (hit) {
+        magicErasedIds.current.add(hit.id);
+        deleteActions(pageIndex, [hit.id]);
+      }
+      return;
+    }
+
     // PAN TOOL / Middle Click: Move Canvas
     if (activeTool === "pan" || e.button === 1) {
       e.preventDefault();
@@ -945,6 +963,18 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       if (initialPinchDist.current > 10) {
         const factor = currentDist / initialPinchDist.current;
         setZoom(initialPinchZoom.current * factor);
+      }
+      return;
+    }
+
+    // Magic Eraser drag deleting
+    if (isMagicErasing.current) {
+      e.preventDefault();
+      const point = getCanvasPoint(e);
+      const hit = hitTestItem(point);
+      if (hit && !magicErasedIds.current.has(hit.id)) {
+        magicErasedIds.current.add(hit.id);
+        deleteActions(pageIndex, [hit.id]);
       }
       return;
     }
@@ -1175,6 +1205,12 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
+    if (isMagicErasing.current) {
+      isMagicErasing.current = false;
+      magicErasedIds.current.clear();
+      return;
+    }
+
     if (activePointers.current.size === 0 && isPanning.current) {
       isPanning.current = false;
       setIsGrabbing(false);
@@ -1243,6 +1279,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     isResizing.current = false;
     isDraggingItem.current = false;
     isMarqueeSelecting.current = false;
+    isMagicErasing.current = false;
+    magicErasedIds.current.clear();
     isPanning.current = false;
     setIsGrabbing(false);
     isDrawing.current = false;
@@ -1258,7 +1296,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     if (activeTool === "select") return "default";
     if (activeTool === "pan") return isGrabbing ? "grabbing" : "grab";
     if (activeTool === "text") return "text";
-    if (activeTool === "eraser") return "cell";
+    if (activeTool === "eraser" || activeTool === "magic-eraser") return "cell";
     return "crosshair";
   }, [activeTool, isGrabbing]);
 

@@ -6,6 +6,7 @@ export type Tool =
   | "pan"
   | "pen"
   | "eraser"
+  | "magic-eraser"
   | "highlighter"
   | "rectangle"
   | "circle"

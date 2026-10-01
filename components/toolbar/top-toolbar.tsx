@@ -18,6 +18,7 @@ import {
   Download,
   FileImage,
   Layers,
+  Sparkles,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useWhiteboardStore, type ShapeType } from "@/store/whiteboard-store";
@@ -159,6 +160,9 @@ export function TopToolbar() {
           break;
         case "e":
           setTool("eraser");
+          break;
+        case "x":
+          setTool("magic-eraser");
           break;
         case "t":
           setTool("text");
@@ -364,10 +368,16 @@ export function TopToolbar() {
           true
         )}
         {iconBtn(
-          "Eraser (E)",
+          "Pixel Eraser (E)",
           <Eraser />,
           () => setTool("eraser"),
           activeTool === "eraser"
+        )}
+        {iconBtn(
+          "Magic Eraser (X)",
+          <Sparkles />,
+          () => setTool("magic-eraser"),
+          activeTool === "magic-eraser"
         )}
       </div>
 
