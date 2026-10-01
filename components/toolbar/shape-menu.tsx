@@ -14,7 +14,11 @@ const shapes: { id: ShapeType; icon: React.ElementType; label: string }[] = [
 export function ShapeMenu() {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const { activeTool, setTool, selectedShape, setSelectedShape } = useWhiteboardStore();
+  const activeTool = useWhiteboardStore((s) => s.activeTool);
+  const setTool = useWhiteboardStore((s) => s.setTool);
+  const selectedShape = useWhiteboardStore((s) => s.selectedShape);
+  const setSelectedShape = useWhiteboardStore((s) => s.setSelectedShape);
+  const strokeColor = useWhiteboardStore((s) => s.strokeColor);
 
   const ActiveIcon = shapes.find((s) => s.id === selectedShape)?.icon ?? Square;
   const isShapeTool = (["rectangle", "circle", "line", "arrow"] as const).includes(
@@ -22,7 +26,7 @@ export function ShapeMenu() {
   );
 
   useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent) => {
+    const handleOutsideClick = (e: MouseEvent | PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpen(false);
       }
@@ -39,20 +43,24 @@ export function ShapeMenu() {
     <div className="wb-shape-wrap" ref={menuRef}>
       <button
         type="button"
-        className={`wb-tool ${isShapeTool ? "wb-active" : ""}`}
-        title={`Shape: ${selectedShape}`}
+        className={`wb-tool ${isShapeTool ? "wb-active wb-active-tinted" : ""}`}
+        title={`Shape: ${selectedShape} (S)`}
         aria-label={`Shape: ${selectedShape}`}
         aria-pressed={isShapeTool}
+        style={
+          isShapeTool
+            ? ({ "--tool-color": strokeColor } as React.CSSProperties)
+            : undefined
+        }
         onClick={() => {
           setTool(selectedShape);
-          setOpen((prev) => !prev);
         }}
       >
         <ActiveIcon />
       </button>
       <button
         type="button"
-        className="wb-shape-caret"
+        className={`wb-shape-caret ${open ? "wb-caret-open" : ""}`}
         aria-label="Choose shape"
         title="Choose shape"
         onClick={() => setOpen((prev) => !prev)}
@@ -61,7 +69,7 @@ export function ShapeMenu() {
       </button>
 
       {open && (
-        <div className="wb-shape-menu wb-panel" role="menu">
+        <div className="wb-shape-menu wb-panel" role="menu" aria-label="Shapes">
           {shapes.map(({ id, icon: Icon, label }) => (
             <button
               key={id}

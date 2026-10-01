@@ -13,7 +13,7 @@
   --wb-shadow: 0 4px 20px -2px oklch(0.2 0 0 / 0.08), 0 2px 6px oklch(0.2 0 0 / 0.04);
 
   --canvas-bg: oklch(1 0 0);
-  --canvas-grid-color: oklch(0.20 0 0 / 0.025);
+  --canvas-grid-color: oklch(0.20 0 0 / 0.012);
 }
 
 .dark {
@@ -29,7 +29,7 @@
   --wb-shadow: 0 6px 24px -2px oklch(0 0 0 / 0.5), 0 2px 8px oklch(0 0 0 / 0.3);
 
   --canvas-bg: oklch(0.18 0.008 260);
-  --canvas-grid-color: oklch(0.94 0 0 / 0.03);
+  --canvas-grid-color: oklch(0.94 0 0 / 0.015);
 }
 
 @theme inline {
@@ -43,21 +43,12 @@ body,
 .wb,
 .wb-board,
 .wb-panel,
-.canvas-grid-bg,
-.whiteboard-scroll {
+.canvas-grid-bg {
   transition:
-    background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    background-image 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    color 0.25s ease,
-    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* View Transitions animation */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 0.35s;
-  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.15s ease,
+    box-shadow 0.2s ease;
 }
 
 body {
@@ -97,8 +88,8 @@ body {
   border: 1px solid var(--wb-border);
   box-shadow: var(--wb-shadow);
   border-radius: 14px;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 /* ── Top Toolbar ── */
@@ -132,7 +123,7 @@ body {
   margin: 0 4px;
 }
 
-/* ── Tool Buttons ── */
+/* ── Tool Buttons (Zero Hover Animations, Pure Select / Active Animation) ── */
 .wb .wb-tool {
   display: inline-flex;
   align-items: center;
@@ -147,7 +138,6 @@ body {
   background: transparent;
   cursor: pointer;
   outline: none;
-  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
 }
 
 .wb .wb-tool svg {
@@ -156,30 +146,45 @@ body {
   stroke-width: 1.9;
 }
 
-.wb .wb-tool:hover:not(:disabled),
-.wb .wb-zoom-label:hover,
-.wb .wb-shape-caret:hover {
-  background: var(--wb-hover);
-}
-
+/* Instant press feedback for selection */
 .wb .wb-tool:active:not(:disabled) {
-  transform: scale(0.94);
+  transform: scale(0.92);
+  transition: transform 0.08s ease;
 }
 
+/* Selected state */
 .wb .wb-tool.wb-active {
   background: var(--wb-active);
   color: var(--wb-blue);
   font-weight: 600;
+  transform: scale(1);
 }
 
 .wb .wb-tool.wb-active svg {
   stroke: var(--wb-blue);
 }
 
+/* Active Drawing Tool Color Tinting */
+.wb .wb-tool.wb-active-tinted {
+  color: var(--tool-color, var(--wb-blue));
+}
+
+.wb .wb-tool.wb-active-tinted svg {
+  stroke: var(--tool-color, var(--wb-blue)) !important;
+}
+
 .wb .wb-tool:disabled {
   color: var(--wb-muted);
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+.wb .wb-tool-delete {
+  color: #ef4444 !important;
+}
+
+.wb .wb-tool-delete svg {
+  stroke: #ef4444 !important;
 }
 
 /* ── Zoom Display ── */
@@ -194,10 +199,13 @@ body {
   background: transparent;
   border-radius: 7px;
   cursor: pointer;
-  transition: background-color 0.15s ease;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.wb .wb-zoom-label:active {
+  transform: scale(0.94);
 }
 
 /* ── Page Indicator ── */
@@ -229,12 +237,15 @@ body {
   background: transparent;
   border-radius: 4px;
   cursor: pointer;
-  transition: background-color 0.15s ease;
 }
 
 .wb .wb-shape-caret svg {
   width: 11px;
   height: 11px;
+}
+
+.wb .wb-caret-open svg {
+  transform: rotate(180deg);
 }
 
 .wb-shape-menu {
@@ -264,11 +275,10 @@ body {
   background: transparent;
   border-radius: 7px;
   cursor: pointer;
-  transition: background-color 0.12s ease;
 }
 
-.wb .wb-shape-option:hover {
-  background: var(--wb-hover);
+.wb .wb-shape-option:active {
+  background: var(--wb-active);
 }
 
 .wb .wb-shape-option svg {
@@ -284,31 +294,63 @@ body {
   color: var(--wb-blue);
 }
 
-/* ── Bottom Settings Toolbar ── */
-.wb-bottom {
-  position: absolute;
-  z-index: 40;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  height: 44px;
-  padding: 4px 10px;
-  display: flex;
+/* ── Color Picker Button in Top Toolbar ── */
+.wb-color-picker-btn {
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  max-width: calc(100vw - 20px);
+  justify-content: center;
+  width: 32px;
+  height: 32px;
 }
 
-.wb-colors {
+.wb-color-dot {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  flex: none;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.dark .wb-color-dot {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* ── Floating Color Palette Panel ── */
+.wb-color-popover {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: 12px;
+  z-index: 50;
+  border-radius: 14px;
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+.wb-popover-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--wb-muted);
+}
+
+.wb-popover-colors {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  justify-items: center;
   align-items: center;
-  gap: 5px;
 }
 
 .wb .wb-swatch-button {
-  width: 28px;
-  height: 28px;
-  flex: none;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border-radius: 50%;
   border: none;
@@ -317,52 +359,50 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.15s ease;
 }
 
-.wb .wb-swatch-button:hover {
-  transform: translateY(-2px);
+.wb .wb-swatch-button:active {
+  transform: scale(0.92);
 }
 
 .wb-swatch {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   display: block;
-  transition: transform 0.15s ease, outline 0.15s ease;
 }
 
+/* Select animation & outline for color swatches */
 .wb-swatch-selected .wb-swatch {
-  outline: 2px solid var(--wb-ink);
-  outline-offset: 2px;
-  transform: scale(1.08);
+  outline: 2.5px solid var(--wb-ink);
+  outline-offset: 2.5px;
+  transform: scale(1.1);
+  transition: transform 0.1s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .wb-custom-color {
   position: relative;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  flex: none;
+  width: 32px;
+  height: 32px;
   cursor: pointer;
   border-radius: 50%;
-  transition: transform 0.15s ease;
 }
 
-.wb-custom-color:hover {
-  transform: translateY(-2px);
+.wb-custom-color:active {
+  transform: scale(0.92);
 }
 
 .wb-color-wheel {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: conic-gradient(
     oklch(0.63 0.24 25),
     oklch(0.8 0.19 85),
     oklch(0.7 0.2 145),
-    oklch(0.65 0.2 220),
+    oklch(0.65 0.22 220),
     oklch(0.62 0.22 290),
     oklch(0.63 0.24 25)
   );
@@ -370,9 +410,10 @@ body {
 }
 
 .wb-custom-color.wb-swatch-selected .wb-color-wheel {
-  outline: 2px solid var(--wb-ink);
-  outline-offset: 2px;
-  transform: scale(1.08);
+  outline: 2.5px solid var(--wb-ink);
+  outline-offset: 2.5px;
+  transform: scale(1.1);
+  transition: transform 0.1s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .wb-custom-color input {
@@ -384,34 +425,298 @@ body {
   cursor: pointer;
 }
 
-/* ── Size Slider Control ── */
-.wb-size-control {
-  display: flex;
+/* ── Stroke & Eraser Size Button in Toolbar ── */
+.wb-size-picker-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 4px 0 8px;
-  min-width: 150px;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  box-sizing: border-box;
 }
 
-.wb-size-dot {
-  background: var(--wb-ink);
+.wb-size-num-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--wb-ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+}
+
+/* ── Floating Stroke & Eraser Size Panel ── */
+.wb-size-popover {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(248px, calc(100vw - 24px));
+  padding: 12px;
+  z-index: 50;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.wb-size-presets {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.wb-size-preset-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 2px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--wb-ink);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.wb-size-preset-btn:active {
+  transform: scale(0.92);
+}
+
+.wb-size-preset-btn span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+}
+
+/* Select animation for thickness preset */
+.wb-size-preset-active {
+  background: var(--wb-active) !important;
+  border-color: var(--wb-border) !important;
+  color: var(--wb-blue) !important;
+  transform: scale(1.04);
+  transition: transform 0.1s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.wb-preset-dot {
   border-radius: 50%;
   flex: none;
 }
 
-.wb-size-control input[type="range"] {
-  width: 95px;
+.wb-popover-divider {
+  width: 100%;
+  height: 1px;
+  background: var(--wb-border);
+  margin: 1px 0;
+}
+
+.wb-popover-size-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.wb-popover-dot-container {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.wb-popover-size-dot {
+  border-radius: 50%;
+  flex: none;
+}
+
+.wb-popover-slider {
+  flex: 1 1 auto;
+  min-width: 0;
   height: 4px;
   accent-color: var(--wb-blue);
   cursor: pointer;
 }
 
-.wb-size-control output {
-  min-width: 16px;
-  text-align: right;
+.wb-popover-size-num {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
+  color: var(--wb-ink);
+  min-width: 28px;
+  text-align: right;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Clear Page Confirmation Popover ── */
+.wb-confirm-popover {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 230px;
+  padding: 12px 14px;
+  z-index: 50;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+.wb-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--wb-ink);
+}
+
+.wb-confirm-warn-icon {
+  width: 16px;
+  height: 16px;
+  color: #f59e0b;
+  flex: none;
+}
+
+.wb-confirm-desc {
+  font-size: 11px;
   color: var(--wb-muted);
+  line-height: 1.4;
+}
+
+.wb-confirm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.wb-confirm-btn {
+  padding: 4px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+
+.wb-confirm-btn:active {
+  transform: scale(0.95);
+}
+
+.wb-confirm-cancel {
+  background: var(--wb-hover);
+  color: var(--wb-ink);
+}
+
+.wb-confirm-danger {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+/* ── Contextual Selection Tooltip ── */
+.wb-tooltip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  border-radius: 10px;
+  background: var(--wb-panel);
+  border: 1px solid var(--wb-border);
+  box-shadow: var(--wb-shadow);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  user-select: none;
+  z-index: 30;
+}
+
+.wb-tooltip .wb-tool {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+.wb-tooltip .wb-tool svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ── In-Canvas Inline Text Editor ── */
+.wb-inline-text-editor {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1.5px dashed #3b82f6;
+  border-radius: 6px;
+  outline: none;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-sans), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08), 0 0 0 2px rgba(59, 130, 246, 0.2);
+  caret-color: #3b82f6;
+  display: block;
+}
+
+.dark .wb-inline-text-editor {
+  background: rgba(24, 24, 27, 0.9);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3), 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+.wb-inline-text-editor::placeholder {
+  color: var(--wb-muted);
+  opacity: 0.55;
+}
+
+/* ── Toast Message ── */
+.wb-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--wb-panel);
+  color: var(--wb-ink);
+  border: 1px solid var(--wb-border);
+  box-shadow: var(--wb-shadow);
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  z-index: 60;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: toastFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+  user-select: none;
+}
+
+@keyframes toastFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
 }
 
 /* ── Scroll Container (Full Page Snap View) ── */
@@ -425,7 +730,7 @@ body {
   scroll-behavior: smooth;
 }
 
-/* ── Canvas Pages (Exact Screen Fit) ── */
+/* ── Canvas Pages (Framed with comfortable padding) ── */
 .canvas-page {
   scroll-snap-align: start;
   scroll-snap-stop: always;
@@ -437,7 +742,7 @@ body {
   flex-direction: column;
 }
 
-/* ── Canvas Paper with Grid ── */
+/* ── Canvas Paper with Very Light Grid ── */
 .canvas-grid-bg {
   background-color: var(--canvas-bg);
   background-image:
@@ -446,7 +751,7 @@ body {
   background-size: 24px 24px;
 }
 
-/* ── Responsive adjustments for mobile & small screens ── */
+/* ── Responsive adjustments for mobile & tablet ── */
 @media (max-width: 768px) {
   .wb-top {
     top: 8px;
@@ -454,7 +759,7 @@ body {
     min-height: 40px;
     flex-wrap: wrap;
     justify-content: center;
-    width: min(480px, calc(100vw - 16px));
+    width: min(540px, calc(100vw - 16px));
     padding: 4px 6px;
   }
 
@@ -463,26 +768,7 @@ body {
   }
 
   .wb .wb-tool {
-    width: 29px;
-    height: 29px;
-  }
-
-  .wb-bottom {
-    bottom: 10px;
-    height: auto;
-    min-height: 40px;
-    width: min(390px, calc(100vw - 16px));
-    flex-wrap: wrap;
-    justify-content: center;
-    padding: 6px 8px;
-  }
-
-  .wb-size-control {
-    min-width: 130px;
-    gap: 8px;
-  }
-
-  .wb-size-control input[type="range"] {
-    width: 75px;
+    width: 30px;
+    height: 30px;
   }
 }
