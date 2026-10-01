@@ -15,10 +15,15 @@ import {
   Minus,
   Trash2,
   AlertTriangle,
+  Download,
+  FileImage,
+  Layers,
 } from "lucide-react";
+import { useTheme } from "next-themes";
 import { useWhiteboardStore, type ShapeType } from "@/store/whiteboard-store";
 import { ShapeMenu } from "./shape-menu";
 import { ThemeToggle } from "./theme-toggle";
+import { exportPageAsImage } from "@/lib/export-canvas";
 
 const PALETTE = [
   { name: "Charcoal", value: "#202124" },
@@ -45,8 +50,9 @@ export function TopToolbar() {
   const setTool = useWhiteboardStore((s) => s.setTool);
   const selectedShape = useWhiteboardStore((s) => s.selectedShape);
   const setSelectedId = useWhiteboardStore((s) => s.setSelectedId);
+  const pages = useWhiteboardStore((s) => s.pages);
   const activePageIndex = useWhiteboardStore((s) => s.activePageIndex);
-  const totalPages = useWhiteboardStore((s) => s.pages.length);
+  const totalPages = pages.length;
   const addPage = useWhiteboardStore((s) => s.addPage);
   const clearPage = useWhiteboardStore((s) => s.clearPage);
   const addAction = useWhiteboardStore((s) => s.addAction);
@@ -64,14 +70,20 @@ export function TopToolbar() {
   const setWidth = useWhiteboardStore((s) => s.setWidth);
   const showNotice = useWhiteboardStore((s) => s.showNotice);
 
+  const { resolvedTheme, theme } = useTheme();
+  const isDark = (resolvedTheme || theme) === "dark";
+
   const fileRef = useRef<HTMLInputElement>(null);
   const colorMenuRef = useRef<HTMLDivElement>(null);
   const sizeMenuRef = useRef<HTMLDivElement>(null);
   const clearMenuRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const [colorOpen, setColorOpen] = useState(false);
   const [sizeOpen, setSizeOpen] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Close menus when clicking outside
   useEffect(() => {
@@ -93,6 +105,12 @@ export function TopToolbar() {
         !clearMenuRef.current.contains(e.target as Node)
       ) {
         setClearConfirmOpen(false);
+      }
+      if (
+        exportMenuRef.current &&
+        !exportMenuRef.current.contains(e.target as Node)
+      ) {
+        setExportOpen(false);
       }
     };
     document.addEventListener("pointerdown", handlePointerDownOutside);
@@ -257,6 +275,38 @@ export function TopToolbar() {
     showNotice(`Page ${activePageIndex + 1} cleared`);
   };
 
+  const handleExportPage = async (format: "png" | "jpeg") => {
+    try {
+      setIsExporting(true);
+      setExportOpen(false);
+      const curPage = pages[activePageIndex];
+      if (!curPage) return;
+      await exportPageAsImage(curPage, activePageIndex + 1, format, isDark);
+      showNotice(`Page ${activePageIndex + 1} exported as ${format.toUpperCase()}`);
+    } catch {
+      showNotice("Export failed");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportAllPages = async () => {
+    try {
+      setIsExporting(true);
+      setExportOpen(false);
+      for (let i = 0; i < pages.length; i++) {
+        await exportPageAsImage(pages[i], i + 1, "png", isDark);
+        // Small stagger for multi-file download
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      showNotice(`Exported all ${pages.length} pages as PNG`);
+    } catch {
+      showNotice("Export failed");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const isCustomColor = !PALETTE.some(
     (p) => p.value.toLowerCase() === strokeColor.toLowerCase()
   );
@@ -355,6 +405,7 @@ export function TopToolbar() {
           onClick={() => {
             setColorOpen((prev) => !prev);
             setSizeOpen(false);
+            setExportOpen(false);
           }}
         >
           <span
@@ -439,12 +490,13 @@ export function TopToolbar() {
           onClick={() => {
             setSizeOpen((prev) => !prev);
             setColorOpen(false);
+            setExportOpen(false);
           }}
         >
           <span className="wb-size-num-label">{strokeWidth}</span>
         </button>
 
-        {/* ── Floating Stroke Size Panel (Non-overflowing) ── */}
+        {/* ── Floating Stroke Size Panel ── */}
         {sizeOpen && (
           <div
             className="wb-size-popover wb-panel"
@@ -523,6 +575,70 @@ export function TopToolbar() {
       </div>
 
       <span className="wb-divider" />
+
+      {/* ── Export Canvas as Images ── */}
+      <div className="relative flex items-center" ref={exportMenuRef}>
+        {iconBtn(
+          "Export image",
+          <Download />,
+          () => {
+            setExportOpen((prev) => !prev);
+            setColorOpen(false);
+            setSizeOpen(false);
+            setClearConfirmOpen(false);
+          },
+          exportOpen,
+          isExporting
+        )}
+
+        {exportOpen && (
+          <div
+            className="wb-export-popover wb-panel"
+            role="menu"
+            aria-label="Export canvas options"
+          >
+            <div className="wb-popover-title">Export as Image</div>
+            <button
+              type="button"
+              className="wb-export-option"
+              onClick={() => handleExportPage("png")}
+            >
+              <FileImage className="wb-export-icon" />
+              <div className="wb-export-text">
+                <span className="wb-export-name">Page {activePageIndex + 1} (PNG)</span>
+                <span className="wb-export-desc">High resolution lossless</span>
+              </div>
+            </button>
+            <button
+              type="button"
+              className="wb-export-option"
+              onClick={() => handleExportPage("jpeg")}
+            >
+              <FileImage className="wb-export-icon" />
+              <div className="wb-export-text">
+                <span className="wb-export-name">Page {activePageIndex + 1} (JPG)</span>
+                <span className="wb-export-desc">Compressed image</span>
+              </div>
+            </button>
+            {totalPages > 1 && (
+              <>
+                <div className="wb-popover-divider" />
+                <button
+                  type="button"
+                  className="wb-export-option"
+                  onClick={handleExportAllPages}
+                >
+                  <Layers className="wb-export-icon" />
+                  <div className="wb-export-text">
+                    <span className="wb-export-name">All Pages ({totalPages})</span>
+                    <span className="wb-export-desc">Download each as PNG</span>
+                  </div>
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ── Clear Page with Confirmation ── */}
       <div className="relative flex items-center" ref={clearMenuRef}>

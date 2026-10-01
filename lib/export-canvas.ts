@@ -1,0 +1,241 @@
+import { getStroke } from "perfect-freehand";
+import type {
+  Page,
+  DrawAction,
+  Stroke,
+  ShapeStroke,
+  TextElement,
+  ImageElement,
+} from "@/store/whiteboard-store";
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function drawFreehand(ctx: CanvasRenderingContext2D, stroke: Stroke) {
+  if (stroke.points.length < 2) return;
+
+  const outlinePoints = getStroke(
+    stroke.points.map((p) => [p.x, p.y, p.pressure]),
+    {
+      size: stroke.width * 2.5,
+      thinning: stroke.tool === "highlighter" ? 0 : 0.5,
+      smoothing: 0.5,
+      streamline: 0.5,
+      simulatePressure: stroke.points[0].pressure === 0.5,
+    }
+  );
+
+  ctx.save();
+  if (stroke.tool === "highlighter") {
+    ctx.globalAlpha = 0.35;
+    ctx.globalCompositeOperation = "source-over";
+  } else {
+    ctx.globalAlpha = stroke.opacity;
+  }
+  ctx.fillStyle = stroke.color;
+  ctx.beginPath();
+
+  const [first, ...rest] = outlinePoints;
+  if (!first) {
+    ctx.restore();
+    return;
+  }
+  ctx.moveTo(first[0], first[1]);
+  for (const [x, y] of rest) {
+    ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawEraser(ctx: CanvasRenderingContext2D, stroke: Stroke, bgColor: string) {
+  if (stroke.points.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = bgColor;
+  ctx.lineWidth = stroke.width * 5;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (let i = 0; i < stroke.points.length; i++) {
+    const p = stroke.points[i];
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawShape(ctx: CanvasRenderingContext2D, shape: ShapeStroke) {
+  ctx.save();
+  ctx.strokeStyle = shape.color;
+  ctx.lineWidth = Math.max(1, shape.width * 1.5);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  if (shape.tool === "rectangle") {
+    const w = shape.endX - shape.startX;
+    const h = shape.endY - shape.startY;
+    ctx.strokeRect(shape.startX, shape.startY, w, h);
+  } else if (shape.tool === "circle") {
+    const rx = Math.abs(shape.endX - shape.startX) / 2;
+    const ry = Math.abs(shape.endY - shape.startY) / 2;
+    const cx = shape.startX + (shape.endX - shape.startX) / 2;
+    const cy = shape.startY + (shape.endY - shape.startY) / 2;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, Math.max(rx, 1), Math.max(ry, 1), 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (shape.tool === "line") {
+    ctx.beginPath();
+    ctx.moveTo(shape.startX, shape.startY);
+    ctx.lineTo(shape.endX, shape.endY);
+    ctx.stroke();
+  } else if (shape.tool === "arrow") {
+    ctx.beginPath();
+    ctx.moveTo(shape.startX, shape.startY);
+    ctx.lineTo(shape.endX, shape.endY);
+    ctx.stroke();
+
+    const dx = shape.endX - shape.startX;
+    const dy = shape.endY - shape.startY;
+    const angle = Math.atan2(dy, dx);
+    const headLength = 12 + shape.width * 1.5;
+
+    ctx.beginPath();
+    ctx.moveTo(
+      shape.endX - headLength * Math.cos(angle - 0.45),
+      shape.endY - headLength * Math.sin(angle - 0.45)
+    );
+    ctx.lineTo(shape.endX, shape.endY);
+    ctx.lineTo(
+      shape.endX - headLength * Math.cos(angle + 0.45),
+      shape.endY - headLength * Math.sin(angle + 0.45)
+    );
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawText(ctx: CanvasRenderingContext2D, text: TextElement) {
+  ctx.save();
+  ctx.fillStyle = text.color;
+  ctx.font = `${text.fontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+  ctx.textBaseline = "top";
+  const lines = (text.text || "").split("\n");
+  const lineHeight = text.fontSize * 1.25;
+  lines.forEach((line, index) => {
+    ctx.fillText(line, text.x, text.y + index * lineHeight);
+  });
+  ctx.restore();
+}
+
+export async function renderPageToCanvas(
+  page: Page,
+  isDark = false
+): Promise<HTMLCanvasElement> {
+  const canvas = document.createElement("canvas");
+  
+  // Use 1920x1080 canvas standard or screen proportions
+  const width = 1600;
+  const height = 1000;
+  const scale = 2; // HiDPI 2x Retina Export
+
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+
+  const bgColor = isDark ? "#18181b" : "#ffffff";
+
+  ctx.save();
+  ctx.scale(scale, scale);
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, width, height);
+
+  // Subtle export grid pattern
+  ctx.strokeStyle = isDark ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.02)";
+  ctx.lineWidth = 1;
+  const gridSize = 24;
+  ctx.beginPath();
+  for (let x = 0; x <= width; x += gridSize) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+  }
+  for (let y = 0; y <= height; y += gridSize) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+  }
+  ctx.stroke();
+
+  // Render all actions
+  for (const action of page.actions) {
+    if (action.tool === "pen" || action.tool === "highlighter") {
+      drawFreehand(ctx, action as Stroke);
+    } else if (action.tool === "eraser") {
+      drawEraser(ctx, action as Stroke, bgColor);
+    } else if (
+      action.tool === "rectangle" ||
+      action.tool === "circle" ||
+      action.tool === "line" ||
+      action.tool === "arrow"
+    ) {
+      drawShape(ctx, action as ShapeStroke);
+    } else if (action.tool === "text") {
+      drawText(ctx, action as TextElement);
+    } else if (action.tool === "image") {
+      const imgEl = action as ImageElement;
+      try {
+        const img = await loadImage(imgEl.src);
+        ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, imgEl.x, imgEl.y, imgEl.width, imgEl.height);
+        ctx.restore();
+      } catch {
+        // Skip failed image
+      }
+    }
+  }
+
+  ctx.restore();
+  return canvas;
+}
+
+export async function exportPageAsImage(
+  page: Page,
+  pageNumber: number,
+  format: "png" | "jpeg" = "png",
+  isDark = false
+) {
+  const canvas = await renderPageToCanvas(page, isDark);
+  const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+  const extension = format === "jpeg" ? "jpg" : "png";
+
+  return new Promise<void>((resolve) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return resolve();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.download = `noteboard-page-${pageNumber}.${extension}`;
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        resolve();
+      },
+      mimeType,
+      0.95
+    );
+  });
+}

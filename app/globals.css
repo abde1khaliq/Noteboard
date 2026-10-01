@@ -631,6 +631,65 @@ body {
   color: #ffffff;
 }
 
+/* ── Export Canvas Popover ── */
+.wb-export-popover {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 220px;
+  padding: 10px;
+  z-index: 50;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+}
+
+.wb-export-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--wb-ink);
+}
+
+.wb-export-option:active {
+  background: var(--wb-active);
+  transform: scale(0.97);
+}
+
+.wb-export-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--wb-blue);
+  flex: none;
+}
+
+.wb-export-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.wb-export-name {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.wb-export-desc {
+  font-size: 10px;
+  color: var(--wb-muted);
+  line-height: 1.2;
+}
+
 /* ── Contextual Selection Tooltip ── */
 .wb-tooltip {
   display: flex;
