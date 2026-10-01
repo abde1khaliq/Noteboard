@@ -3,13 +3,17 @@ import { create } from "zustand";
 // ── Types ──
 export type Tool =
   | "select"
+  | "pan"
   | "pen"
   | "eraser"
   | "highlighter"
   | "rectangle"
   | "circle"
   | "line"
+  | "arrow"
   | "text";
+
+export type ShapeType = "rectangle" | "circle" | "line" | "arrow";
 
 export interface Point {
   x: number;
@@ -28,7 +32,7 @@ export interface Stroke {
 
 export interface ShapeStroke {
   id: string;
-  tool: "rectangle" | "circle" | "line";
+  tool: ShapeType;
   startX: number;
   startY: number;
   endX: number;
@@ -58,9 +62,11 @@ export interface Page {
 interface WhiteboardState {
   // Tool state
   activeTool: Tool;
+  selectedShape: ShapeType;
   strokeColor: string;
   strokeWidth: number;
   setTool: (tool: Tool) => void;
+  setSelectedShape: (shape: ShapeType) => void;
   setColor: (color: string) => void;
   setWidth: (width: number) => void;
 
@@ -70,10 +76,6 @@ interface WhiteboardState {
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
-
-  // Touch vs Pencil mode
-  drawWithTouch: boolean;
-  toggleDrawWithTouch: () => void;
 
   // Pages
   pages: Page[];
@@ -90,15 +92,21 @@ interface WhiteboardState {
   redo: (pageIndex: number) => void;
   canUndo: (pageIndex: number) => boolean;
   canRedo: (pageIndex: number) => boolean;
+
+  // Toast / Notices
+  notice: string;
+  showNotice: (text: string) => void;
 }
 
 export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   activeTool: "pen",
-  strokeColor: "#000000",
-  strokeWidth: 3,
+  selectedShape: "rectangle",
+  strokeColor: "#202124",
+  strokeWidth: 4,
   zoom: 1,
 
   setTool: (tool) => set({ activeTool: tool }),
+  setSelectedShape: (shape) => set({ selectedShape: shape }),
   setColor: (color) => set({ strokeColor: color }),
   setWidth: (width) => set({ strokeWidth: width }),
 
@@ -115,9 +123,6 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       zoom: Math.max(Number((s.zoom - 0.15).toFixed(2)), 0.4),
     })),
   resetZoom: () => set({ zoom: 1 }),
-
-  drawWithTouch: true,
-  toggleDrawWithTouch: () => set((s) => ({ drawWithTouch: !s.drawWithTouch })),
 
   pages: [{ id: crypto.randomUUID(), actions: [] }],
   activePageIndex: 0,
@@ -187,5 +192,17 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     if (!page) return false;
     const stack = get().undoStacks.get(page.id);
     return stack ? stack.length > 0 : false;
+  },
+
+  notice: "",
+  showNotice: (text) => {
+    set({ notice: text });
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        if (get().notice === text) {
+          set({ notice: "" });
+        }
+      }, 2400);
+    }
   },
 }));

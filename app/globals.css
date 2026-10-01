@@ -1,46 +1,38 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f4f4f2;
-  --foreground: #171717;
+  --wb-bg: oklch(0.97 0 0);
+  --wb-grid: oklch(0.91 0 0);
+  --wb-panel: oklch(1 0 0);
+  --wb-ink: oklch(0.20 0 0);
+  --wb-muted: oklch(0.53 0 0);
+  --wb-border: oklch(0.88 0 0);
+  --wb-hover: oklch(0.95 0 0);
+  --wb-active: oklch(0.92 0.04 252);
+  --wb-blue: oklch(0.58 0.22 257);
+  --wb-shadow: 0 4px 20px -2px oklch(0.2 0 0 / 0.08), 0 2px 6px oklch(0.2 0 0 / 0.04);
 
-  /* Canvas paper in light theme */
-  --canvas-bg: #ffffff;
-  --canvas-grid-color: rgba(15, 23, 42, 0.09);
-
-  /* Toolbar is OPPOSITE of canvas: Solid normal dark color on Light canvas */
-  --glass-bg: rgba(20, 20, 25, 0.94);
-  --glass-border: rgba(255, 255, 255, 0.16);
-  --glass-text: #ffffff;
-  --glass-shadow: rgba(0, 0, 0, 0.35);
-  --glass-hover-bg: rgba(255, 255, 255, 0.14);
-  --glass-active-bg: rgba(59, 130, 246, 0.35);
-  --glass-active-color: #93c5fd;
-  --glass-separator: rgba(255, 255, 255, 0.25);
+  --canvas-bg: oklch(1 0 0);
+  --canvas-grid-color: oklch(0.20 0 0 / 0.025);
 }
 
 .dark {
-  --background: #0e0e10;
-  --foreground: #ededed;
+  --wb-bg: oklch(0.15 0.008 260);
+  --wb-grid: oklch(0.22 0.008 260);
+  --wb-panel: oklch(0.22 0.008 260);
+  --wb-ink: oklch(0.94 0 0);
+  --wb-muted: oklch(0.63 0 0);
+  --wb-border: oklch(0.32 0.005 260);
+  --wb-hover: oklch(0.28 0.008 260);
+  --wb-active: oklch(0.35 0.06 252);
+  --wb-blue: oklch(0.70 0.19 252);
+  --wb-shadow: 0 6px 24px -2px oklch(0 0 0 / 0.5), 0 2px 8px oklch(0 0 0 / 0.3);
 
-  /* Canvas paper in dark theme */
-  --canvas-bg: #1c1c22;
-  --canvas-grid-color: rgba(255, 255, 255, 0.08);
-
-  /* Toolbar is OPPOSITE of canvas: Solid normal white/light color on Dark canvas */
-  --glass-bg: rgba(255, 255, 255, 0.96);
-  --glass-border: rgba(0, 0, 0, 0.14);
-  --glass-text: #09090b;
-  --glass-shadow: rgba(0, 0, 0, 0.55);
-  --glass-hover-bg: rgba(0, 0, 0, 0.08);
-  --glass-active-bg: rgba(2, 132, 199, 0.2);
-  --glass-active-color: #0284c7;
-  --glass-separator: rgba(0, 0, 0, 0.18);
+  --canvas-bg: oklch(0.18 0.008 260);
+  --canvas-grid-color: oklch(0.94 0 0 / 0.03);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -48,27 +40,29 @@
 /* ── Smooth Theme Morphing Transition ── */
 html,
 body,
+.wb,
+.wb-board,
+.wb-panel,
 .canvas-grid-bg,
-.liquid-glass,
 .whiteboard-scroll {
   transition:
-    background-color 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    background-image 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    border-color 0.45s cubic-bezier(0.4, 0, 0.2, 1),
-    color 0.4s ease,
-    box-shadow 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+    background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    background-image 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.25s ease,
+    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* View Transitions animation */
 ::view-transition-old(root),
 ::view-transition-new(root) {
-  animation-duration: 0.4s;
+  animation-duration: 0.35s;
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--wb-bg);
+  color: var(--wb-ink);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
   overscroll-behavior: none;
   overflow: hidden;
@@ -80,70 +74,344 @@ body {
   user-select: none;
 }
 
-/* ── Toolbar (Solid normal color, no gradient) ── */
-.liquid-glass {
-  background: var(--glass-bg) !important;
-  color: var(--glass-text) !important;
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--glass-border) !important;
-  border-radius: 9999px; /* Pill shape */
-  box-shadow:
-    0 14px 40px -4px var(--glass-shadow),
-    0 4px 16px rgba(0, 0, 0, 0.1);
-  isolation: isolate;
-  transform: translateZ(0);
+/* ── Whiteboard Root Layout ── */
+.wb {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--wb-bg);
+  color: var(--wb-ink);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }
 
-/* Force all inner text, buttons, icons to inherit the inverse theme color */
-.liquid-glass * {
-  color: var(--glass-text);
+.wb-board {
+  position: absolute;
+  inset: 0;
+  background-color: var(--wb-bg);
+  touch-action: none;
 }
 
-.liquid-glass svg {
-  color: var(--glass-text);
-  stroke: var(--glass-text);
+/* ── Panel Styling (Floating Chrome) ── */
+.wb-panel {
+  background: var(--wb-panel);
+  border: 1px solid var(--wb-border);
+  box-shadow: var(--wb-shadow);
+  border-radius: 14px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
-.liquid-glass button {
-  color: var(--glass-text) !important;
-  border-radius: 16px !important;
-  transition: all 0.2s ease !important;
+/* ── Top Toolbar ── */
+.wb-top {
+  position: absolute;
+  z-index: 40;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  height: 44px;
+  white-space: nowrap;
+  max-width: calc(100vw - 20px);
 }
 
-.liquid-glass button:hover {
-  background-color: var(--glass-hover-bg) !important;
+.wb-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.liquid-glass button.tool-btn-active {
-  background: var(--glass-active-bg) !important;
-  color: var(--glass-active-color) !important;
-  font-weight: 700;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
+.wb-divider {
+  display: block;
+  flex: none;
+  width: 1px;
+  height: 22px;
+  background: var(--wb-border);
+  margin: 0 4px;
 }
 
-.liquid-glass button.tool-btn-active svg {
-  color: var(--glass-active-color) !important;
-  stroke: var(--glass-active-color) !important;
+/* ── Tool Buttons ── */
+.wb .wb-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--wb-ink);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
 }
 
-.liquid-glass .toolbar-separator {
-  background-color: var(--glass-separator) !important;
-  width: 1px !important;
-  height: 24px !important;
+.wb .wb-tool svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.9;
 }
 
-/* Accessibility: reduced transparency fallback */
-@media (prefers-reduced-transparency: reduce) {
-  .liquid-glass {
-    background: var(--glass-text) !important;
-    color: var(--background) !important;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-  .liquid-glass * {
-    color: var(--background) !important;
-  }
+.wb .wb-tool:hover:not(:disabled),
+.wb .wb-zoom-label:hover,
+.wb .wb-shape-caret:hover {
+  background: var(--wb-hover);
+}
+
+.wb .wb-tool:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.wb .wb-tool.wb-active {
+  background: var(--wb-active);
+  color: var(--wb-blue);
+  font-weight: 600;
+}
+
+.wb .wb-tool.wb-active svg {
+  stroke: var(--wb-blue);
+}
+
+.wb .wb-tool:disabled {
+  color: var(--wb-muted);
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Zoom Display ── */
+.wb .wb-zoom-label {
+  min-width: 44px;
+  height: 32px;
+  padding: 0 4px;
+  color: var(--wb-ink);
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Page Indicator ── */
+.wb-page-indicator {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--wb-muted);
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* ── Shape Dropdown ── */
+.wb-shape-wrap {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.wb .wb-shape-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 26px;
+  padding: 0;
+  margin-left: -3px;
+  color: var(--wb-muted);
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.wb .wb-shape-caret svg {
+  width: 11px;
+  height: 11px;
+}
+
+.wb-shape-menu {
+  position: absolute;
+  top: 42px;
+  left: 0;
+  padding: 6px;
+  width: 156px;
+  z-index: 50;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wb .wb-shape-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 34px;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--wb-ink);
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.wb .wb-shape-option:hover {
+  background: var(--wb-hover);
+}
+
+.wb .wb-shape-option svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
+.wb .wb-shape-option .wb-check {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--wb-blue);
+}
+
+/* ── Bottom Settings Toolbar ── */
+.wb-bottom {
+  position: absolute;
+  z-index: 40;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  height: 44px;
+  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 20px);
+}
+
+.wb-colors {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.wb .wb-swatch-button {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease;
+}
+
+.wb .wb-swatch-button:hover {
+  transform: translateY(-2px);
+}
+
+.wb-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: block;
+  transition: transform 0.15s ease, outline 0.15s ease;
+}
+
+.wb-swatch-selected .wb-swatch {
+  outline: 2px solid var(--wb-ink);
+  outline-offset: 2px;
+  transform: scale(1.08);
+}
+
+.wb-custom-color {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  cursor: pointer;
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+}
+
+.wb-custom-color:hover {
+  transform: translateY(-2px);
+}
+
+.wb-color-wheel {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: conic-gradient(
+    oklch(0.63 0.24 25),
+    oklch(0.8 0.19 85),
+    oklch(0.7 0.2 145),
+    oklch(0.65 0.2 220),
+    oklch(0.62 0.22 290),
+    oklch(0.63 0.24 25)
+  );
+  display: block;
+}
+
+.wb-custom-color.wb-swatch-selected .wb-color-wheel {
+  outline: 2px solid var(--wb-ink);
+  outline-offset: 2px;
+  transform: scale(1.08);
+}
+
+.wb-custom-color input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+/* ── Size Slider Control ── */
+.wb-size-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px 0 8px;
+  min-width: 150px;
+}
+
+.wb-size-dot {
+  background: var(--wb-ink);
+  border-radius: 50%;
+  flex: none;
+}
+
+.wb-size-control input[type="range"] {
+  width: 95px;
+  height: 4px;
+  accent-color: var(--wb-blue);
+  cursor: pointer;
+}
+
+.wb-size-control output {
+  min-width: 16px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--wb-muted);
 }
 
 /* ── Scroll Container (Full Page Snap View) ── */
@@ -175,5 +443,46 @@ body {
   background-image:
     linear-gradient(to right, var(--canvas-grid-color) 1px, transparent 1px),
     linear-gradient(to bottom, var(--canvas-grid-color) 1px, transparent 1px);
-  background-size: 28px 28px;
+  background-size: 24px 24px;
+}
+
+/* ── Responsive adjustments for mobile & small screens ── */
+@media (max-width: 768px) {
+  .wb-top {
+    top: 8px;
+    height: auto;
+    min-height: 40px;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: min(480px, calc(100vw - 16px));
+    padding: 4px 6px;
+  }
+
+  .wb-top .wb-divider {
+    margin: 0 2px;
+  }
+
+  .wb .wb-tool {
+    width: 29px;
+    height: 29px;
+  }
+
+  .wb-bottom {
+    bottom: 10px;
+    height: auto;
+    min-height: 40px;
+    width: min(390px, calc(100vw - 16px));
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 6px 8px;
+  }
+
+  .wb-size-control {
+    min-width: 130px;
+    gap: 8px;
+  }
+
+  .wb-size-control input[type="range"] {
+    width: 75px;
+  }
 }

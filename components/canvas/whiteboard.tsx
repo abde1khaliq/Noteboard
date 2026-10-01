@@ -23,6 +23,19 @@ export function Whiteboard() {
     }
   }, [pages.length, setActivePage]);
 
+  const handleAddPage = () => {
+    addPage();
+    setTimeout(() => {
+      const container = scrollRef.current;
+      if (container) {
+        container.scrollTo({
+          top: pages.length * container.clientHeight,
+          behavior: "smooth",
+        });
+      }
+    }, 50);
+  };
+
   return (
     <div
       ref={scrollRef}
@@ -41,7 +54,7 @@ export function Whiteboard() {
       {/* ── Add Page Slide ── */}
       <div className="canvas-page w-full h-full flex flex-col items-center justify-center p-4 shrink-0">
         <button
-          onClick={addPage}
+          onClick={handleAddPage}
           className="flex items-center gap-3 px-8 py-4 rounded-3xl bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 font-semibold text-base transition-all duration-200 border-2 border-dashed border-black/15 dark:border-white/15 shadow-sm active:scale-95 cursor-pointer"
         >
           <Plus size={22} />

@@ -22,6 +22,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const dragStart = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const initialScroll = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
   const initialPinchDist = useRef<number | null>(null);
+  const initialPinchMid = useRef<{ x: number; y: number } | null>(null);
   const initialPinchZoom = useRef<number>(1);
   const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
 
@@ -32,7 +33,6 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const activeTool = useWhiteboardStore((s) => s.activeTool);
   const strokeColor = useWhiteboardStore((s) => s.strokeColor);
   const strokeWidth = useWhiteboardStore((s) => s.strokeWidth);
-  const drawWithTouch = useWhiteboardStore((s) => s.drawWithTouch);
   const zoom = useWhiteboardStore((s) => s.zoom);
   const setZoom = useWhiteboardStore((s) => s.setZoom);
   const pageActions = useWhiteboardStore((s) => s.pages[pageIndex]?.actions ?? []);
@@ -63,7 +63,10 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       ctx.beginPath();
 
       const [first, ...rest] = outlinePoints;
-      if (!first) { ctx.restore(); return; }
+      if (!first) {
+        ctx.restore();
+        return;
+      }
       ctx.moveTo(first[0], first[1]);
       for (const [x, y] of rest) {
         ctx.lineTo(x, y);
@@ -122,6 +125,30 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         ctx.moveTo(shape.startX, shape.startY);
         ctx.lineTo(shape.endX, shape.endY);
         ctx.stroke();
+      } else if (shape.tool === "arrow") {
+        // Main line
+        ctx.beginPath();
+        ctx.moveTo(shape.startX, shape.startY);
+        ctx.lineTo(shape.endX, shape.endY);
+        ctx.stroke();
+
+        // Arrow head
+        const dx = shape.endX - shape.startX;
+        const dy = shape.endY - shape.startY;
+        const angle = Math.atan2(dy, dx);
+        const headLength = 12 + shape.width * 1.5;
+
+        ctx.beginPath();
+        ctx.moveTo(
+          shape.endX - headLength * Math.cos(angle - 0.45),
+          shape.endY - headLength * Math.sin(angle - 0.45)
+        );
+        ctx.lineTo(shape.endX, shape.endY);
+        ctx.lineTo(
+          shape.endX - headLength * Math.cos(angle + 0.45),
+          shape.endY - headLength * Math.sin(angle + 0.45)
+        );
+        ctx.stroke();
       }
 
       ctx.restore();
@@ -134,7 +161,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     (ctx: CanvasRenderingContext2D, text: TextElement) => {
       ctx.save();
       ctx.fillStyle = text.color;
-      ctx.font = `${text.fontSize}px var(--font-geist-sans), system-ui, sans-serif`;
+      ctx.font = `${text.fontSize}px var(--font-sans), system-ui, sans-serif`;
       ctx.fillText(text.text, text.x, text.y);
       ctx.restore();
     },
@@ -144,17 +171,15 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   // ── Draw a single action ──
   const drawAction = useCallback(
     (ctx: CanvasRenderingContext2D, action: DrawAction) => {
-      if (
-        action.tool === "pen" ||
-        action.tool === "highlighter"
-      ) {
+      if (action.tool === "pen" || action.tool === "highlighter") {
         drawFreehandStroke(ctx, action as Stroke);
       } else if (action.tool === "eraser") {
         drawEraserStroke(ctx, action as Stroke);
       } else if (
         action.tool === "rectangle" ||
         action.tool === "circle" ||
-        action.tool === "line"
+        action.tool === "line" ||
+        action.tool === "arrow"
       ) {
         drawShape(ctx, action as ShapeStroke);
       } else if (action.tool === "text") {
@@ -229,13 +254,13 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   // ── Text input ──
   const handleTextInput = (point: Point) => {
     const text = prompt("Enter text:");
-    if (text) {
+    if (text?.trim()) {
       const textAction: TextElement = {
         id: crypto.randomUUID(),
         tool: "text",
         x: point.x,
         y: point.y,
-        text,
+        text: text.trim(),
         color: strokeColor,
         fontSize: Math.max(strokeWidth * 6, 18),
       };
@@ -243,12 +268,24 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     }
   };
 
-  // ── Wheel Zoom & Scroll Handling ──
+  // ── Wheel Zoom & Page Scroll Handling ──
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    if (activeTool === "select" || e.ctrlKey || e.metaKey) {
+    // Zoom when holding Ctrl or Cmd (pinch-to-zoom on trackpads or Ctrl+wheel)
+    if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const zoomDelta = -e.deltaY * 0.0015;
       setZoom(zoom + zoomDelta);
+      return;
+    }
+
+    // Directly scroll pages inside the canvas
+    const scrollContainer = document.querySelector(".whiteboard-scroll") as HTMLElement;
+    if (scrollContainer) {
+      scrollContainer.scrollBy({
+        top: e.deltaY,
+        left: e.deltaX,
+        behavior: "auto",
+      });
     }
   };
 
@@ -256,25 +293,20 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Handle Pinch Zoom gesture (2 fingers)
+    const scrollContainer = document.querySelector(".whiteboard-scroll") as HTMLElement;
+
+    // ── Handle Two-Finger Gesture (Hand Move + Pinch Zoom) ──
     if (activePointers.current.size === 2) {
       isDrawing.current = false;
-      isPanning.current = false;
-      const pts = Array.from(activePointers.current.values());
-      initialPinchDist.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      initialPinchZoom.current = zoom;
-      return;
-    }
-
-    // ── SELECT TOOL: Pan & Scroll Canvas ──
-    if (activeTool === "select") {
-      e.preventDefault();
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
       isPanning.current = true;
       setIsGrabbing(true);
-      dragStart.current = { x: e.clientX, y: e.clientY };
-
-      const scrollContainer = document.querySelector(".whiteboard-scroll") as HTMLElement;
+      const pts = Array.from(activePointers.current.values());
+      initialPinchDist.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      initialPinchMid.current = {
+        x: (pts[0].x + pts[1].x) / 2,
+        y: (pts[0].y + pts[1].y) / 2,
+      };
+      initialPinchZoom.current = zoom;
       if (scrollContainer) {
         initialScroll.current = {
           top: scrollContainer.scrollTop,
@@ -284,9 +316,29 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
-    // If touch drawing is disabled, let finger events pass through for scroll
-    if (e.pointerType === "touch" && !drawWithTouch) return;
+    // ── Single Touch/Pointer Hand Move (Pan Tool, Select Tool, or Middle Click) ──
+    const isHandPan =
+      activeTool === "pan" ||
+      activeTool === "select" ||
+      e.button === 1;
 
+    if (isHandPan) {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      isPanning.current = true;
+      setIsGrabbing(true);
+      dragStart.current = { x: e.clientX, y: e.clientY };
+
+      if (scrollContainer) {
+        initialScroll.current = {
+          top: scrollContainer.scrollTop,
+          left: scrollContainer.scrollLeft,
+        };
+      }
+      return;
+    }
+
+    // ── Drawing Tool with Stylus/Pencil or Touch (when Finger-Draw is enabled) ──
     e.preventDefault();
     (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
     isDrawing.current = true;
@@ -302,7 +354,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     } else if (
       activeTool === "rectangle" ||
       activeTool === "circle" ||
-      activeTool === "line"
+      activeTool === "line" ||
+      activeTool === "arrow"
     ) {
       shapeStart.current = { x: point.x, y: point.y };
     } else if (activeTool === "text") {
@@ -314,24 +367,44 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Handle Pinch Zoom
-    if (activePointers.current.size === 2 && initialPinchDist.current) {
+    const scrollContainer = document.querySelector(".whiteboard-scroll") as HTMLElement;
+
+    // ── Two-Finger Hand Pan & Pinch Zoom ──
+    if (
+      activePointers.current.size === 2 &&
+      initialPinchDist.current &&
+      initialPinchMid.current
+    ) {
+      e.preventDefault();
       const pts = Array.from(activePointers.current.values());
+      const currentMid = {
+        x: (pts[0].x + pts[1].x) / 2,
+        y: (pts[0].y + pts[1].y) / 2,
+      };
       const currentDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      if (initialPinchDist.current > 0) {
+
+      // Pan canvas with two fingers
+      if (scrollContainer && initialScroll.current) {
+        scrollContainer.scrollTop =
+          initialScroll.current.top - (currentMid.y - initialPinchMid.current.y);
+        scrollContainer.scrollLeft =
+          initialScroll.current.left - (currentMid.x - initialPinchMid.current.x);
+      }
+
+      // Zoom canvas with pinch
+      if (initialPinchDist.current > 10) {
         const factor = currentDist / initialPinchDist.current;
         setZoom(initialPinchZoom.current * factor);
       }
       return;
     }
 
-    // ── SELECT TOOL: Drag to Pan / Scroll ──
-    if (activeTool === "select" && isPanning.current) {
+    // ── Single Pointer Hand Pan ──
+    if (isPanning.current) {
       e.preventDefault();
       const dx = e.clientX - dragStart.current.x;
       const dy = e.clientY - dragStart.current.y;
-      const scrollContainer = document.querySelector(".whiteboard-scroll") as HTMLElement;
-      if (scrollContainer) {
+      if (scrollContainer && initialScroll.current) {
         scrollContainer.scrollTop = initialScroll.current.top - dy;
         scrollContainer.scrollLeft = initialScroll.current.left - dx;
       }
@@ -339,7 +412,6 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     }
 
     if (!isDrawing.current) return;
-    if (e.pointerType === "touch" && !drawWithTouch) return;
     e.preventDefault();
 
     const canvas = canvasRef.current!;
@@ -352,7 +424,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       activeTool === "eraser" ||
       activeTool === "highlighter"
     ) {
-      // Collect coalesced events for smoother lines
+      // Collect coalesced events for smoother lines on Apple Pencil
       const coalesced =
         (e.nativeEvent as PointerEvent).getCoalescedEvents?.() || [];
 
@@ -398,7 +470,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     } else if (
       (activeTool === "rectangle" ||
         activeTool === "circle" ||
-        activeTool === "line") &&
+        activeTool === "line" ||
+        activeTool === "arrow") &&
       shapeStart.current
     ) {
       const point = getCanvasPoint(e);
@@ -427,16 +500,16 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
     if (activePointers.current.size < 2) {
       initialPinchDist.current = null;
+      initialPinchMid.current = null;
     }
 
-    if (activeTool === "select") {
+    if (activePointers.current.size === 0 && isPanning.current) {
       isPanning.current = false;
       setIsGrabbing(false);
       return;
     }
 
     if (!isDrawing.current) return;
-    if (e.pointerType === "touch" && !drawWithTouch) return;
     isDrawing.current = false;
 
     const point = getCanvasPoint(e);
@@ -470,7 +543,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     } else if (
       (activeTool === "rectangle" ||
         activeTool === "circle" ||
-        activeTool === "line") &&
+        activeTool === "line" ||
+        activeTool === "arrow") &&
       shapeStart.current
     ) {
       const shape: ShapeStroke = {
@@ -493,6 +567,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
     activePointers.current.delete(e.pointerId);
     initialPinchDist.current = null;
+    initialPinchMid.current = null;
     isPanning.current = false;
     setIsGrabbing(false);
     isDrawing.current = false;
@@ -517,7 +592,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           transition: isPanning.current ? "none" : "transform 0.15s ease-out",
           touchAction: "none",
           cursor:
-            activeTool === "select"
+            activeTool === "select" || activeTool === "pan"
               ? isGrabbing
                 ? "grabbing"
                 : "grab"
