@@ -44,10 +44,12 @@ function distToSegmentSquared(p: Point, v: Point, w: Point) {
 
 export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const isDrawing = useRef(false);
   const isPanning = useRef(false);
+  const isGestureZooming = useRef(false);
   const isDraggingItem = useRef(false);
   const isResizing = useRef(false);
   const isMarqueeSelecting = useRef(false);
@@ -57,6 +59,10 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const isCommittingText = useRef(false);
   const rafId = useRef<number>(0);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
+
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const panStart = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const panInitial = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const marqueeStart = useRef<Point | null>(null);
   const marqueeCurrent = useRef<Point | null>(null);
@@ -70,10 +76,9 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const resizeStartPoint = useRef<Point>({ x: 0, y: 0, pressure: 0.5 });
   const dragItemsStartPositions = useRef<{ id: string; startX: number; startY: number }[]>([]);
   const dragStartPoint = useRef<Point>({ x: 0, y: 0, pressure: 0.5 });
-  const dragStart = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const initialScroll = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
   const initialPinchDist = useRef<number | null>(null);
   const initialPinchMid = useRef<{ x: number; y: number } | null>(null);
+  const initialPinchContentPoint = useRef<{ x: number; y: number } | null>(null);
   const initialPinchZoom = useRef<number>(1);
   const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -111,6 +116,13 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   useEffect(() => {
     scrollContainerRef.current = document.querySelector(".whiteboard-scroll");
   }, []);
+
+  // Reset pan when zoom is reset to 100%
+  useEffect(() => {
+    if (zoom === 1) {
+      setPan({ x: 0, y: 0 });
+    }
+  }, [zoom]);
 
   // Selected Items calculation (handles single item or multi-cropped items)
   const selectedItems = useMemo(() => {
@@ -707,8 +719,33 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      const zoomDelta = -e.deltaY * 0.0015;
-      setZoom(zoom + zoomDelta);
+      const zoomFactor = Math.exp(-e.deltaY * 0.003);
+      const newZoom = Math.min(
+        Math.max(Number((zoom * zoomFactor).toFixed(2)), 0.4),
+        3.0
+      );
+      if (newZoom === zoom) return;
+
+      const canvas = canvasRef.current;
+      const container = containerRef.current;
+      if (canvas && container) {
+        const rect = canvas.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const centerX = containerRect.left + containerRect.width / 2;
+        const centerY = containerRect.top + containerRect.height / 2;
+        const W = canvas.clientWidth;
+        const H = canvas.clientHeight;
+
+        const Cx = (e.clientX - rect.left) * (W / (rect.width || 1));
+        const Cy = (e.clientY - rect.top) * (H / (rect.height || 1));
+
+        const newPanX = e.clientX - centerX - (Cx - W / 2) * newZoom;
+        const newPanY = e.clientY - centerY - (Cy - H / 2) * newZoom;
+
+        setPan({ x: Math.round(newPanX), y: Math.round(newPanY) });
+      }
+
+      setZoom(newZoom);
       return;
     }
 
@@ -729,27 +766,38 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     }
 
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const scrollContainer = scrollContainerRef.current;
 
-    // Two-Finger Gesture (Hand Move + Pinch Zoom)
+    // Two-Finger Gesture (Hand Move + Pinch Zoom at Hand Location)
     if (activePointers.current.size === 2) {
       isDrawing.current = false;
+      currentPoints.current = [];
       isDraggingItem.current = false;
       isResizing.current = false;
       isMarqueeSelecting.current = false;
+      isMagicErasing.current = false;
+      magicErasedIds.current.clear();
       isPanning.current = true;
+      isGestureZooming.current = true;
       setIsGrabbing(true);
+      redrawCanvas();
+
       const pts = Array.from(activePointers.current.values());
-      initialPinchDist.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      initialPinchMid.current = {
+      const mid = {
         x: (pts[0].x + pts[1].x) / 2,
         y: (pts[0].y + pts[1].y) / 2,
       };
+      initialPinchDist.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      initialPinchMid.current = mid;
       initialPinchZoom.current = zoom;
-      if (scrollContainer) {
-        initialScroll.current = {
-          top: scrollContainer.scrollTop,
-          left: scrollContainer.scrollLeft,
+
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const W = canvas.clientWidth;
+        const H = canvas.clientHeight;
+        initialPinchContentPoint.current = {
+          x: (mid.x - rect.left) * (W / (rect.width || 1)),
+          y: (mid.y - rect.top) * (H / (rect.height || 1)),
         };
       }
       return;
@@ -853,13 +901,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       isPanning.current = true;
       setIsGrabbing(true);
-      dragStart.current = { x: e.clientX, y: e.clientY };
-      if (scrollContainer) {
-        initialScroll.current = {
-          top: scrollContainer.scrollTop,
-          left: scrollContainer.scrollLeft,
-        };
-      }
+      panStart.current = { x: e.clientX, y: e.clientY };
+      panInitial.current = { ...pan };
       return;
     }
 
@@ -939,11 +982,13 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       }
     }
 
-    // Two-Finger Hand Pan & Pinch Zoom
+    // Two-Finger Hand Pan & Pinch Zoom at Hand Location
     if (
       activePointers.current.size === 2 &&
       initialPinchDist.current &&
-      initialPinchMid.current
+      initialPinchDist.current > 5 &&
+      initialPinchMid.current &&
+      initialPinchContentPoint.current
     ) {
       e.preventDefault();
       const pts = Array.from(activePointers.current.values());
@@ -952,18 +997,30 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         y: (pts[0].y + pts[1].y) / 2,
       };
       const currentDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const factor = currentDist / initialPinchDist.current;
+      const targetZoom = Math.min(
+        Math.max(Number((initialPinchZoom.current * factor).toFixed(2)), 0.4),
+        3.0
+      );
 
-      if (scrollContainer && initialScroll.current) {
-        scrollContainer.scrollTop =
-          initialScroll.current.top - (currentMid.y - initialPinchMid.current.y);
-        scrollContainer.scrollLeft =
-          initialScroll.current.left - (currentMid.x - initialPinchMid.current.x);
+      const canvas = canvasRef.current;
+      const container = containerRef.current;
+      if (canvas && container) {
+        const containerRect = container.getBoundingClientRect();
+        const centerX = containerRect.left + containerRect.width / 2;
+        const centerY = containerRect.top + containerRect.height / 2;
+        const W = canvas.clientWidth;
+        const H = canvas.clientHeight;
+        const Cx = initialPinchContentPoint.current.x;
+        const Cy = initialPinchContentPoint.current.y;
+
+        const newPanX = currentMid.x - centerX - (Cx - W / 2) * targetZoom;
+        const newPanY = currentMid.y - centerY - (Cy - H / 2) * targetZoom;
+
+        setPan({ x: Math.round(newPanX), y: Math.round(newPanY) });
       }
 
-      if (initialPinchDist.current > 10) {
-        const factor = currentDist / initialPinchDist.current;
-        setZoom(initialPinchZoom.current * factor);
-      }
+      setZoom(targetZoom);
       return;
     }
 
@@ -1052,14 +1109,14 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     }
 
     // Single Pointer Canvas Panning
-    if (isPanning.current) {
+    if (isPanning.current && activePointers.current.size === 1) {
       e.preventDefault();
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      if (scrollContainer && initialScroll.current) {
-        scrollContainer.scrollTop = initialScroll.current.top - dy;
-        scrollContainer.scrollLeft = initialScroll.current.left - dx;
-      }
+      const dx = e.clientX - panStart.current.x;
+      const dy = e.clientY - panStart.current.y;
+      setPan({
+        x: Math.round(panInitial.current.x + dx),
+        y: Math.round(panInitial.current.y + dy),
+      });
       return;
     }
 
@@ -1152,6 +1209,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     if (activePointers.current.size < 2) {
       initialPinchDist.current = null;
       initialPinchMid.current = null;
+      initialPinchContentPoint.current = null;
+      isGestureZooming.current = false;
     }
 
     if (isResizing.current) {
@@ -1276,6 +1335,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     activePointers.current.delete(e.pointerId);
     initialPinchDist.current = null;
     initialPinchMid.current = null;
+    initialPinchContentPoint.current = null;
+    isGestureZooming.current = false;
     isResizing.current = false;
     isDraggingItem.current = false;
     isMarqueeSelecting.current = false;
@@ -1301,7 +1362,10 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   }, [activeTool, isGrabbing]);
 
   return (
-    <div className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden">
+    <div
+      ref={containerRef}
+      className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden"
+    >
       {/* Discreet page number badge */}
       <div className="absolute top-3 left-4 z-10 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-zinc-400 dark:text-zinc-500 pointer-events-none select-none">
         Page {pageIndex + 1}
@@ -1310,10 +1374,14 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       <div
         className="relative w-full h-full flex items-center justify-center"
         style={{
-          transform: `scale(${zoom})`,
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           transformOrigin: "center center",
           transition:
-            isPanning.current || isDraggingItem.current || isResizing.current || isMarqueeSelecting.current
+            isPanning.current ||
+            isDraggingItem.current ||
+            isResizing.current ||
+            isMarqueeSelecting.current ||
+            isGestureZooming.current
               ? "none"
               : "transform 0.12s ease-out",
         }}
