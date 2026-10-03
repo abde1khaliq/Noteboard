@@ -737,6 +737,8 @@ export function TopToolbar() {
             className="wb-confirm-popover wb-panel"
             role="alertdialog"
             aria-label="Confirm Clear Canvas"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="wb-confirm-header">
               <AlertTriangle className="wb-confirm-warn-icon" />
