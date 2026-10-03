@@ -10,6 +10,7 @@ import {
   X,
   Maximize2,
   Compass,
+  Map as MapIcon,
 } from "lucide-react";
 import {
   useWhiteboardStore,
@@ -21,6 +22,7 @@ import {
   type DrawAction,
   getActionBoundingBox,
 } from "@/store/whiteboard-store";
+import { Minimap } from "./minimap";
 
 interface EditingTextState {
   id?: string;
@@ -87,6 +89,20 @@ export function InfiniteCanvas() {
   const shapeStart = useRef<{ x: number; y: number } | null>(null);
   const [isGrabbing, setIsGrabbing] = useState(false);
   const [spacePressed, setSpacePressed] = useState(false);
+
+  // Minimap Visibility State
+  const [showMinimap, setShowMinimap] = useState(false);
+  const minimapTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const triggerMinimap = useCallback((durationMs = 1500) => {
+    setShowMinimap(true);
+    if (minimapTimerRef.current) {
+      clearTimeout(minimapTimerRef.current);
+    }
+    minimapTimerRef.current = setTimeout(() => {
+      setShowMinimap(false);
+    }, durationMs);
+  }, []);
 
   // Store Subscriptions
   const activeTool = useWhiteboardStore((s) => s.activeTool);
@@ -297,7 +313,13 @@ export function InfiniteCanvas() {
         e.preventDefault();
         fitToContent({ width: window.innerWidth, height: window.innerHeight });
         showNotice("Fitted to content");
+        triggerMinimap(2000);
         return;
+      }
+
+      // Minimap shortcut (M when not drawing, or 'Tab')
+      if (e.key.toLowerCase() === "m" && activeTool === "select") {
+        triggerMinimap(2000);
       }
 
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -330,12 +352,14 @@ export function InfiniteCanvas() {
   }, [
     spacePressed,
     selectedItems.length,
+    activeTool,
     deleteSelectedAction,
     setSelectedId,
     setSelectedIds,
     selectAll,
     fitToContent,
     showNotice,
+    triggerMinimap,
   ]);
 
   // Clipboard Paste for Images
@@ -777,6 +801,9 @@ export function InfiniteCanvas() {
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
 
+    // Show minimap during trackpad two-finger pan or zoom
+    triggerMinimap(1500);
+
     if (e.ctrlKey || e.metaKey) {
       // Zoom into pointer anchor
       const zoomFactor = Math.exp(-e.deltaY * 0.003);
@@ -800,7 +827,7 @@ export function InfiniteCanvas() {
 
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Two-Finger Gesture (Pinch Zoom & Hand Pan at finger centroid)
+    // Two-Finger Gesture (Pinch Zoom & Hand Pan at finger centroid) -> SHOW MINIMAP!
     if (activePointers.current.size === 2) {
       isDrawing.current = false;
       currentPoints.current = [];
@@ -812,6 +839,10 @@ export function InfiniteCanvas() {
       isPanning.current = true;
       isGestureZooming.current = true;
       setIsGrabbing(true);
+      setShowMinimap(true);
+      if (minimapTimerRef.current) {
+        clearTimeout(minimapTimerRef.current);
+      }
       redrawCanvas();
 
       const pts = Array.from(activePointers.current.values());
@@ -840,6 +871,7 @@ export function InfiniteCanvas() {
       setIsGrabbing(true);
       panStart.current = { x: e.clientX, y: e.clientY };
       panInitial.current = { ...pan };
+      triggerMinimap(1800);
       return;
     }
 
@@ -1014,7 +1046,7 @@ export function InfiniteCanvas() {
       }
     }
 
-    // Two-Finger Pinch Zoom & Pan at finger centroid
+    // Two-Finger Pinch Zoom & Pan at finger centroid (Show Minimap!)
     if (
       activePointers.current.size === 2 &&
       initialPinchDist.current &&
@@ -1022,6 +1054,8 @@ export function InfiniteCanvas() {
       initialPinchMid.current
     ) {
       e.preventDefault();
+      setShowMinimap(true);
+
       const pts = Array.from(activePointers.current.values());
       const currentMid = {
         x: (pts[0].x + pts[1].x) / 2,
@@ -1227,6 +1261,8 @@ export function InfiniteCanvas() {
       initialPinchDist.current = null;
       initialPinchMid.current = null;
       isGestureZooming.current = false;
+      // Keep minimap visible for 1.5s after 2-finger gesture ends
+      triggerMinimap(1500);
     }
 
     if (isResizing.current) {
@@ -1290,6 +1326,7 @@ export function InfiniteCanvas() {
     if (activePointers.current.size === 0 && isPanning.current) {
       isPanning.current = false;
       setIsGrabbing(false);
+      triggerMinimap(1200);
       return;
     }
 
@@ -1368,6 +1405,7 @@ export function InfiniteCanvas() {
     shapeStart.current = null;
     marqueeStart.current = null;
     marqueeCurrent.current = null;
+    triggerMinimap(1200);
     scheduleRedraw();
   };
 
@@ -1408,6 +1446,9 @@ export function InfiniteCanvas() {
         onPointerLeave={handlePointerUp}
         onPointerCancel={handlePointerCancel}
       />
+
+      {/* ── Interactive Minimap (Appears on Two-Finger Gestures and Navigation) ── */}
+      <Minimap visible={showMinimap} />
 
       {/* ── Inline Text Editor Overlay (Positioned in Screen Space) ── */}
       {editingText && editingTextScreenPos && (
@@ -1558,8 +1599,25 @@ export function InfiniteCanvas() {
         </div>
       )}
 
-      {/* ── Bottom-Right Infinite Canvas Navigation Bar (Quick Fit & Center) ── */}
+      {/* ── Bottom-Right Infinite Canvas Navigation Bar (Quick Fit, Center & Minimap Toggle) ── */}
       <div className="absolute bottom-4 right-4 z-20 flex items-center gap-1.5 p-1.5 rounded-xl bg-[var(--wb-panel)] border border-[var(--wb-border)] shadow-md backdrop-blur-md">
+        <button
+          type="button"
+          title={showMinimap ? "Hide minimap" : "Show minimap (2 fingers)"}
+          aria-label="Toggle minimap"
+          aria-pressed={showMinimap}
+          className={`wb-tool ${showMinimap ? "wb-active" : ""}`}
+          onClick={() => {
+            if (showMinimap) {
+              setShowMinimap(false);
+              if (minimapTimerRef.current) clearTimeout(minimapTimerRef.current);
+            } else {
+              triggerMinimap(4000);
+            }
+          }}
+        >
+          <MapIcon />
+        </button>
         <button
           type="button"
           title="Fit to content (Shift + 1)"
@@ -1568,6 +1626,7 @@ export function InfiniteCanvas() {
           onClick={() => {
             fitToContent({ width: window.innerWidth, height: window.innerHeight });
             showNotice("Fitted to content");
+            triggerMinimap(2000);
           }}
         >
           <Maximize2 />
@@ -1580,6 +1639,7 @@ export function InfiniteCanvas() {
           onClick={() => {
             resetZoom({ width: window.innerWidth, height: window.innerHeight });
             showNotice("View centered at 100%");
+            triggerMinimap(2000);
           }}
         >
           <Compass />

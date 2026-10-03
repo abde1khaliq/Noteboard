@@ -1,12 +1,17 @@
 # Noteboard
 
-Noteboard is a fast, lightweight, and touch-first **infinite canvas whiteboard** and digital note-taking application. It offers an expansive boundless workspace, smooth pressure-sensitive freehand drawing, smart shapes, inline text editing, marquee crop selection, a magic eraser for one-tap object removal, high-resolution Retina 2x image export, clipboard image pasting, and natural pinch-to-zoom at the cursor location.
+Noteboard is a fast, lightweight, and touch-first **infinite canvas whiteboard** and digital note-taking application. It offers an expansive boundless workspace, smooth pressure-sensitive freehand drawing, smart shapes, inline text editing, marquee crop selection, a magic eraser for one-tap object removal, an **interactive minimap** for spatial awareness, high-resolution Retina 2x image export, clipboard image pasting, and natural pinch-to-zoom at the cursor location.
 
 ---
 
 ## ✨ Features
 
 - **Infinite Canvas Workspace**: Seamless 2D plane spanning infinitely in all directions with smooth pan, zoom, and dynamic grid rendering.
+- **Interactive Minimap**:
+  - Automatically pops up whenever the user uses **2 fingers** to move or pinch-zoom across the canvas.
+  - Displays miniature representations of all canvas elements (strokes, shapes, text, images).
+  - Highlights the **current viewport frame** so you never get lost.
+  - Interactive: tap or drag directly on the minimap to teleport/pan to that region.
 - **Natural Navigation**:
   - **Pinch-to-zoom** centered at mouse or touch position.
   - **Two-finger trackpad / touch pan**.
@@ -29,7 +34,7 @@ Noteboard is a fast, lightweight, and touch-first **infinite canvas whiteboard**
 | `V` | Select / Transform Tool |
 | `H` / `Space + Drag` | Pan Infinite Canvas |
 | `P` | Pen Tool |
-| `M` | Highlighter Tool |
+| `M` | Highlighter Tool (or show Minimap in Select mode) |
 | `E` | Pixel Eraser |
 | `X` | Magic Object Eraser |
 | `T` | Text Tool |
