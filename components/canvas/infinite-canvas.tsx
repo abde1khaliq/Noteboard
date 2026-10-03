@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useState, useMemo } from "react";
+import React, { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { getStroke } from "perfect-freehand";
 import {
   Trash2,
@@ -8,6 +8,8 @@ import {
   SendToBack,
   Type,
   X,
+  Maximize2,
+  Compass,
 } from "lucide-react";
 import {
   useWhiteboardStore,
@@ -17,11 +19,8 @@ import {
   type TextElement,
   type ImageElement,
   type DrawAction,
+  getActionBoundingBox,
 } from "@/store/whiteboard-store";
-
-interface CanvasPageProps {
-  pageIndex: number;
-}
 
 interface EditingTextState {
   id?: string;
@@ -42,13 +41,14 @@ function distToSegmentSquared(p: Point, v: Point, w: Point) {
   return (p.x - (v.x + t * (w.x - v.x))) ** 2 + (p.y - (v.y + t * (w.y - v.y))) ** 2;
 }
 
-export function CanvasPage({ pageIndex }: CanvasPageProps) {
+export function InfiniteCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Gesture and interaction tracking refs
   const isDrawing = useRef(false);
   const isPanning = useRef(false);
+  const isSpacePanning = useRef(false);
   const isGestureZooming = useRef(false);
   const isDraggingItem = useRef(false);
   const isResizing = useRef(false);
@@ -58,9 +58,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const activeResizeHandle = useRef<ResizeHandle | null>(null);
   const isCommittingText = useRef(false);
   const rafId = useRef<number>(0);
-  const scrollContainerRef = useRef<HTMLElement | null>(null);
 
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const panStart = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const panInitial = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
@@ -76,19 +74,23 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const resizeStartPoint = useRef<Point>({ x: 0, y: 0, pressure: 0.5 });
   const dragItemsStartPositions = useRef<{ id: string; startX: number; startY: number }[]>([]);
   const dragStartPoint = useRef<Point>({ x: 0, y: 0, pressure: 0.5 });
+
+  // Pinch zoom tracking
   const initialPinchDist = useRef<number | null>(null);
   const initialPinchMid = useRef<{ x: number; y: number } | null>(null);
-  const initialPinchContentPoint = useRef<{ x: number; y: number } | null>(null);
   const initialPinchZoom = useRef<number>(1);
+  const initialPinchPan = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
 
   const currentPoints = useRef<Point[]>([]);
   const shapeStart = useRef<{ x: number; y: number } | null>(null);
   const [isGrabbing, setIsGrabbing] = useState(false);
+  const [spacePressed, setSpacePressed] = useState(false);
 
-  // Granular Store Subscriptions
+  // Store Subscriptions
   const activeTool = useWhiteboardStore((s) => s.activeTool);
+  const setTool = useWhiteboardStore((s) => s.setTool);
   const selectedId = useWhiteboardStore((s) => s.selectedId);
   const selectedIds = useWhiteboardStore((s) => s.selectedIds);
   const setSelectedId = useWhiteboardStore((s) => s.setSelectedId);
@@ -102,107 +104,60 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
   const sendBackward = useWhiteboardStore((s) => s.sendBackward);
   const strokeColor = useWhiteboardStore((s) => s.strokeColor);
   const strokeWidth = useWhiteboardStore((s) => s.strokeWidth);
-  const zoom = useWhiteboardStore((s) => s.zoom);
-  const setZoom = useWhiteboardStore((s) => s.setZoom);
-  const pageActions = useWhiteboardStore((s) => s.pages[pageIndex]?.actions ?? []);
+  const actions = useWhiteboardStore((s) => s.actions);
   const addAction = useWhiteboardStore((s) => s.addAction);
-  const activePageIndex = useWhiteboardStore((s) => s.activePageIndex);
+  const selectAll = useWhiteboardStore((s) => s.selectAll);
+  const pan = useWhiteboardStore((s) => s.pan);
+  const zoom = useWhiteboardStore((s) => s.zoom);
+  const setPan = useWhiteboardStore((s) => s.setPan);
+  const setZoom = useWhiteboardStore((s) => s.setZoom);
+  const fitToContent = useWhiteboardStore((s) => s.fitToContent);
+  const resetZoom = useWhiteboardStore((s) => s.resetZoom);
+  const showNotice = useWhiteboardStore((s) => s.showNotice);
 
   // Inline Text Editing State
   const [editingText, setEditingText] = useState<EditingTextState | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Cache scroll container on mount
-  useEffect(() => {
-    scrollContainerRef.current = document.querySelector(".whiteboard-scroll");
-  }, []);
+  // Helper: World <-> Screen Coordinate conversion
+  const screenToWorld = useCallback(
+    (screenX: number, screenY: number): { x: number; y: number } => {
+      return {
+        x: (screenX - pan.x) / zoom,
+        y: (screenY - pan.y) / zoom,
+      };
+    },
+    [pan.x, pan.y, zoom]
+  );
 
-  // Reset pan when zoom is reset to 100%
-  useEffect(() => {
-    if (zoom === 1) {
-      setPan({ x: 0, y: 0 });
-    }
-  }, [zoom]);
+  const worldToScreen = useCallback(
+    (worldX: number, worldY: number): { x: number; y: number } => {
+      return {
+        x: worldX * zoom + pan.x,
+        y: worldY * zoom + pan.y,
+      };
+    },
+    [pan.x, pan.y, zoom]
+  );
 
-  // Selected Items calculation (handles single item or multi-cropped items)
+  // Selected Items calculation
   const selectedItems = useMemo(() => {
     if (selectedIds.length > 0) {
-      return pageActions.filter((a) => selectedIds.includes(a.id));
+      return actions.filter((a) => selectedIds.includes(a.id));
     }
     if (selectedId) {
-      const itm = pageActions.find((a) => a.id === selectedId);
+      const itm = actions.find((a) => a.id === selectedId);
       return itm ? [itm] : [];
     }
     return [];
-  }, [pageActions, selectedId, selectedIds]);
+  }, [actions, selectedId, selectedIds]);
 
   const selectedItem = selectedItems.length === 1 ? selectedItems[0] : null;
 
-  // Accurate Bounding Box Calculation for ALL items (strokes, shapes, text, images)
-  const getItemBounds = useCallback(
-    (item: DrawAction): { x: number; y: number; w: number; h: number } => {
-      if (item.tool === "image") {
-        const img = item as ImageElement;
-        return { x: img.x, y: img.y, w: img.width, h: img.height };
-      }
-      if (item.tool === "text") {
-        const txt = item as TextElement;
-        const lines = (txt.text || "").split("\n");
-        const maxLineLen = Math.max(...lines.map((l) => l.length), 1);
-        const w = Math.max(24, maxLineLen * (txt.fontSize * 0.62));
-        const lineHeight = txt.fontSize * 1.25;
-        const h = Math.max(txt.fontSize, lines.length * lineHeight);
-        return { x: txt.x, y: txt.y, w, h: h + 4 };
-      }
-      if (
-        item.tool === "rectangle" ||
-        item.tool === "circle" ||
-        item.tool === "line" ||
-        item.tool === "arrow"
-      ) {
-        const shp = item as ShapeStroke;
-        const minX = Math.min(shp.startX, shp.endX);
-        const maxX = Math.max(shp.startX, shp.endX);
-        const minY = Math.min(shp.startY, shp.endY);
-        const maxY = Math.max(shp.startY, shp.endY);
-        return {
-          x: minX,
-          y: minY,
-          w: Math.max(10, maxX - minX),
-          h: Math.max(10, maxY - minY),
-        };
-      }
-      if (item.tool === "pen" || item.tool === "highlighter" || item.tool === "eraser") {
-        const strk = item as Stroke;
-        if (strk.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
-        let minX = strk.points[0].x;
-        let maxX = strk.points[0].x;
-        let minY = strk.points[0].y;
-        let maxY = strk.points[0].y;
-        for (let i = 1; i < strk.points.length; i++) {
-          const p = strk.points[i];
-          if (p.x < minX) minX = p.x;
-          if (p.x > maxX) maxX = p.x;
-          if (p.y < minY) minY = p.y;
-          if (p.y > maxY) maxY = p.y;
-        }
-        const pad = Math.max(6, strk.width * 1.5);
-        return {
-          x: minX - pad,
-          y: minY - pad,
-          w: Math.max(12, maxX - minX + pad * 2),
-          h: Math.max(12, maxY - minY + pad * 2),
-        };
-      }
-      return { x: 0, y: 0, w: 0, h: 0 };
-    },
-    []
-  );
-
-  // Combined Bounds for all active selections
+  // Combined Bounds for all selected items (in World Coordinates)
   const selectedBounds = useMemo(() => {
     if (selectedItems.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
-    if (selectedItems.length === 1) return getItemBounds(selectedItems[0]);
+    if (selectedItems.length === 1) return getActionBoundingBox(selectedItems[0]);
 
     let minX = Infinity;
     let maxX = -Infinity;
@@ -210,10 +165,10 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     let maxY = -Infinity;
 
     for (const item of selectedItems) {
-      const b = getItemBounds(item);
+      const b = getActionBoundingBox(item);
       if (b.x < minX) minX = b.x;
-      if (b.x + b.w > maxX) maxX = b.x + b.w;
       if (b.y < minY) minY = b.y;
+      if (b.x + b.w > maxX) maxX = b.x + b.w;
       if (b.y + b.h > maxY) maxY = b.y + b.h;
     }
 
@@ -223,7 +178,23 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       w: Math.max(12, maxX - minX),
       h: Math.max(12, maxY - minY),
     };
-  }, [selectedItems, getItemBounds]);
+  }, [selectedItems]);
+
+  // Screen Position for Selection Menu & Handles
+  const selectionScreenBox = useMemo(() => {
+    if (selectedItems.length === 0) return null;
+    const tl = worldToScreen(selectedBounds.x, selectedBounds.y);
+    const w = selectedBounds.w * zoom;
+    const h = selectedBounds.h * zoom;
+    return {
+      x: tl.x,
+      y: tl.y,
+      w,
+      h,
+      centerX: tl.x + w / 2,
+      topY: tl.y,
+    };
+  }, [selectedItems.length, selectedBounds, worldToScreen, zoom]);
 
   // ── Text Editing Handlers ──
   const startEditingText = useCallback(
@@ -254,7 +225,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     const trimmed = editingText.text.trim();
     if (trimmed.length > 0) {
       if (editingText.id) {
-        updateActionText(pageIndex, editingText.id, trimmed);
+        updateActionText(editingText.id, trimmed);
         setSelectedId(editingText.id);
       } else {
         const newId = crypto.randomUUID();
@@ -267,11 +238,11 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           color: editingText.color,
           fontSize: editingText.fontSize,
         };
-        addAction(pageIndex, textAction);
+        addAction(textAction);
         setSelectedId(newId);
       }
     } else if (editingText.id) {
-      deleteSelectedAction(pageIndex);
+      deleteSelectedAction();
     }
     setEditingText(null);
 
@@ -280,7 +251,6 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     });
   }, [
     editingText,
-    pageIndex,
     updateActionText,
     addAction,
     setSelectedId,
@@ -291,7 +261,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     setEditingText(null);
   }, []);
 
-  // Auto-focus textarea and place cursor at end
+  // Focus textarea when editing starts
   useEffect(() => {
     if (editingText && textareaRef.current) {
       textareaRef.current.focus();
@@ -300,7 +270,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     }
   }, [editingText]);
 
-  // Keyboard shortcut for deleting or deselecting
+  // Spacebar Pan & Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -309,20 +279,133 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       ) {
         return;
       }
+
+      // Spacebar for temporary Pan
+      if (e.code === "Space" && !e.repeat && !spacePressed) {
+        setSpacePressed(true);
+      }
+
+      // Select All (Cmd/Ctrl + A)
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectAll();
+        return;
+      }
+
+      // Fit to content (Shift + 1)
+      if (e.key === "!" || (e.shiftKey && e.key === "1")) {
+        e.preventDefault();
+        fitToContent({ width: window.innerWidth, height: window.innerHeight });
+        showNotice("Fitted to content");
+        return;
+      }
+
       if (e.key === "Delete" || e.key === "Backspace") {
         if (selectedItems.length > 0) {
           e.preventDefault();
-          deleteSelectedAction(pageIndex);
+          deleteSelectedAction();
         }
       } else if (e.key === "Escape") {
         setSelectedId(null);
+        setSelectedIds([]);
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedItems.length, pageIndex, deleteSelectedAction, setSelectedId]);
 
-  // ── Freehand Stroke Drawing ──
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        setSpacePressed(false);
+        isSpacePanning.current = false;
+        if (!isPanning.current) {
+          setIsGrabbing(false);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [
+    spacePressed,
+    selectedItems.length,
+    deleteSelectedAction,
+    setSelectedId,
+    setSelectedIds,
+    selectAll,
+    fitToContent,
+    showNotice,
+  ]);
+
+  // Clipboard Paste for Images
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (!file) continue;
+
+          const reader = new FileReader();
+          reader.onload = () => {
+            if (typeof reader.result !== "string") return;
+            const dataUrl = reader.result;
+            const image = new Image();
+            image.onload = () => {
+              const maxWidth = 550;
+              const maxHeight = 450;
+              const scale = Math.min(1, maxWidth / image.width, maxHeight / image.height);
+              const w = Math.round(image.width * scale);
+              const h = Math.round(image.height * scale);
+
+              // Center in current screen view in World Coordinates
+              const centerWorld = screenToWorld(
+                window.innerWidth / 2,
+                window.innerHeight / 2
+              );
+              const imageId = crypto.randomUUID();
+
+              addAction({
+                id: imageId,
+                tool: "image",
+                x: Math.round(centerWorld.x - w / 2),
+                y: Math.round(centerWorld.y - h / 2),
+                src: dataUrl,
+                width: w,
+                height: h,
+                originalWidth: image.naturalWidth || image.width,
+                originalHeight: image.naturalHeight || image.height,
+              });
+
+              setTool("select");
+              setSelectedId(imageId);
+              showNotice("Image pasted from clipboard");
+            };
+            image.src = dataUrl;
+          };
+          reader.readAsDataURL(file);
+          e.preventDefault();
+          break;
+        }
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [screenToWorld, addAction, setTool, setSelectedId, showNotice]);
+
+  // ── Freehand Stroke Drawing in World Space ──
   const drawFreehandStroke = useCallback(
     (ctx: CanvasRenderingContext2D, stroke: Stroke) => {
       if (stroke.points.length < 2) return;
@@ -457,7 +540,10 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     []
   );
 
-  // ── Draw a Single Action ──
+  // Forward ref for scheduling redraw from image onload
+  const scheduleRedrawRef = useRef<() => void>(() => {});
+
+  // ── Draw Single Action in World Coordinates ──
   const drawAction = useCallback(
     (ctx: CanvasRenderingContext2D, action: DrawAction) => {
       if (action.tool === "pen" || action.tool === "highlighter") {
@@ -480,8 +566,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           cached = new Image();
           cached.src = imgEl.src;
           cached.onload = () => {
-            renderOffscreen();
-            redrawCanvas();
+            scheduleRedrawRef.current();
           };
           imageCache.current.set(imgEl.src, cached);
         }
@@ -497,46 +582,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     [drawFreehandStroke, drawEraserStroke, drawShape, drawText]
   );
 
-  // ── Render Committed Actions to Offscreen Canvas Cache ──
-  const renderOffscreen = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-    const displayWidth = canvas.clientWidth;
-    const displayHeight = canvas.clientHeight;
-    if (displayWidth === 0 || displayHeight === 0) return;
-
-    if (!offscreenCanvasRef.current) {
-      offscreenCanvasRef.current = document.createElement("canvas");
-    }
-    const offscreen = offscreenCanvasRef.current;
-    const targetW = Math.floor(displayWidth * dpr);
-    const targetH = Math.floor(displayHeight * dpr);
-
-    if (offscreen.width !== targetW || offscreen.height !== targetH) {
-      offscreen.width = targetW;
-      offscreen.height = targetH;
-    }
-
-    const offCtx = offscreen.getContext("2d");
-    if (!offCtx) return;
-
-    offCtx.save();
-    offCtx.setTransform(1, 0, 0, 1, 0, 0);
-    offCtx.clearRect(0, 0, offscreen.width, offscreen.height);
-    offCtx.scale(dpr, dpr);
-    offCtx.imageSmoothingEnabled = true;
-    offCtx.imageSmoothingQuality = "high";
-
-    for (const action of pageActions) {
-      if (editingText?.id && action.id === editingText.id) continue;
-      drawAction(offCtx, action);
-    }
-
-    offCtx.restore();
-  }, [pageActions, drawAction, editingText]);
-
-  // ── Redraw Main Screen Canvas from Offscreen Cache + Selection & Marquee ──
+  // ── Main Canvas Render Loop (Infinite Canvas) ──
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -554,21 +600,37 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
-      renderOffscreen();
     }
 
-    // Clear main canvas
+    // Clear whole viewport
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Blit from offscreen cache in single O(1) drawImage call
-    if (offscreenCanvasRef.current) {
-      ctx.drawImage(offscreenCanvasRef.current, 0, 0);
-    }
+    // Apply DPR scale + World Viewport Camera Transform
+    ctx.scale(dpr, dpr);
+    ctx.translate(pan.x, pan.y);
+    ctx.scale(zoom, zoom);
+
+    // Draw origin indicator (discreet subtle crosshair at 0, 0 world origin)
+    ctx.save();
+    ctx.strokeStyle = "rgba(128, 128, 128, 0.15)";
+    ctx.lineWidth = 1 / zoom;
+    ctx.beginPath();
+    ctx.moveTo(-12, 0);
+    ctx.lineTo(12, 0);
+    ctx.moveTo(0, -12);
+    ctx.lineTo(0, 12);
+    ctx.stroke();
     ctx.restore();
 
-    // Draw live marquee / crop selection box
+    // Render committed actions in world coordinates
+    for (const action of actions) {
+      if (editingText?.id && action.id === editingText.id) continue;
+      drawAction(ctx, action);
+    }
+
+    // Render live marquee selection box (in world coordinates)
     if (isMarqueeSelecting.current && marqueeStart.current && marqueeCurrent.current) {
       const mx = Math.min(marqueeStart.current.x, marqueeCurrent.current.x);
       const my = Math.min(marqueeStart.current.y, marqueeCurrent.current.y);
@@ -576,57 +638,66 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       const mh = Math.abs(marqueeCurrent.current.y - marqueeStart.current.y);
 
       ctx.save();
-      ctx.scale(dpr, dpr);
       ctx.fillStyle = "rgba(59, 130, 246, 0.12)";
       ctx.fillRect(mx, my, mw, mh);
       ctx.strokeStyle = "#3b82f6";
-      ctx.lineWidth = 1.6;
-      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.6 / zoom;
+      ctx.setLineDash([5 / zoom, 4 / zoom]);
       ctx.strokeRect(mx, my, mw, mh);
       ctx.restore();
     }
 
-    // Draw selection outline and corner resize handles if items are selected
+    // Render selection outline and corner resize handles (in world coordinates)
     if (selectedItems.length > 0 && (!editingText || editingText.id !== selectedId)) {
       const bounds = selectedBounds;
 
       ctx.save();
-      ctx.scale(dpr, dpr);
       ctx.strokeStyle = "#3b82f6";
-      ctx.lineWidth = 1.8;
-      ctx.setLineDash([5, 4]);
-      ctx.strokeRect(bounds.x - 4, bounds.y - 4, bounds.w + 8, bounds.h + 8);
+      ctx.lineWidth = 1.8 / zoom;
+      ctx.setLineDash([5 / zoom, 4 / zoom]);
+      ctx.strokeRect(
+        bounds.x - 4 / zoom,
+        bounds.y - 4 / zoom,
+        bounds.w + 8 / zoom,
+        bounds.h + 8 / zoom
+      );
 
       ctx.setLineDash([]);
       ctx.fillStyle = "#ffffff";
       ctx.strokeStyle = "#2563eb";
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = 2.2 / zoom;
 
+      const handleRadius = 5.5 / zoom;
       const handles = [
-        { x: bounds.x - 4, y: bounds.y - 4 },
-        { x: bounds.x + bounds.w + 4, y: bounds.y - 4 },
-        { x: bounds.x + bounds.w + 4, y: bounds.y + bounds.h + 4 },
-        { x: bounds.x - 4, y: bounds.y + bounds.h + 4 },
+        { x: bounds.x - 4 / zoom, y: bounds.y - 4 / zoom },
+        { x: bounds.x + bounds.w + 4 / zoom, y: bounds.y - 4 / zoom },
+        { x: bounds.x + bounds.w + 4 / zoom, y: bounds.y + bounds.h + 4 / zoom },
+        { x: bounds.x - 4 / zoom, y: bounds.y + bounds.h + 4 / zoom },
       ];
 
       for (const h of handles) {
         ctx.beginPath();
-        ctx.arc(h.x, h.y, 5.5, 0, Math.PI * 2);
+        ctx.arc(h.x, h.y, handleRadius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
       }
 
       ctx.restore();
     }
+
+    ctx.restore();
   }, [
+    actions,
+    pan.x,
+    pan.y,
+    zoom,
     selectedItems.length,
     selectedId,
     selectedBounds,
     editingText,
-    renderOffscreen,
+    drawAction,
   ]);
 
-  // RequestAnimationFrame Batching for buttery-smooth 60fps renders
   const scheduleRedraw = useCallback(() => {
     cancelAnimationFrame(rafId.current);
     rafId.current = requestAnimationFrame(() => {
@@ -634,16 +705,17 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     });
   }, [redrawCanvas]);
 
-  // Update offscreen buffer whenever page actions change
   useEffect(() => {
-    renderOffscreen();
+    scheduleRedrawRef.current = scheduleRedraw;
+  }, [scheduleRedraw]);
+
+  useEffect(() => {
     scheduleRedraw();
-  }, [pageActions, editingText, renderOffscreen, scheduleRedraw]);
+  }, [actions, pan, zoom, editingText, scheduleRedraw]);
 
   // Window resize handler
   useEffect(() => {
     const handleResize = () => {
-      renderOffscreen();
       scheduleRedraw();
     };
     window.addEventListener("resize", handleResize);
@@ -651,59 +723,45 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       window.removeEventListener("resize", handleResize);
       cancelAnimationFrame(rafId.current);
     };
-  }, [renderOffscreen, scheduleRedraw]);
+  }, [scheduleRedraw]);
 
-  // Pointer coordinate calculation
-  const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.clientWidth / (rect.width || 1);
-    const scaleY = canvas.clientHeight / (rect.height || 1);
-    const pressure = e.pointerType === "mouse" ? 0.5 : e.pressure > 0 ? e.pressure : 0.5;
-    return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-      pressure,
-    };
-  };
-
-  // Hit test for resize handles
+  // Hit test for resize handles in World Coordinates
   const hitTestResizeHandle = (
-    point: Point,
+    worldPoint: Point,
     bounds: { x: number; y: number; w: number; h: number }
   ): ResizeHandle | null => {
-    const handleRadius = 16;
+    const handleRadius = 18 / zoom; // Screen-invariant hit radius
     const corners: { handle: ResizeHandle; x: number; y: number }[] = [
-      { handle: "nw", x: bounds.x - 4, y: bounds.y - 4 },
-      { handle: "ne", x: bounds.x + bounds.w + 4, y: bounds.y - 4 },
-      { handle: "se", x: bounds.x + bounds.w + 4, y: bounds.y + bounds.h + 4 },
-      { handle: "sw", x: bounds.x - 4, y: bounds.y + bounds.h + 4 },
+      { handle: "nw", x: bounds.x - 4 / zoom, y: bounds.y - 4 / zoom },
+      { handle: "ne", x: bounds.x + bounds.w + 4 / zoom, y: bounds.y - 4 / zoom },
+      { handle: "se", x: bounds.x + bounds.w + 4 / zoom, y: bounds.y + bounds.h + 4 / zoom },
+      { handle: "sw", x: bounds.x - 4 / zoom, y: bounds.y + bounds.h + 4 / zoom },
     ];
 
     for (const c of corners) {
-      if (Math.hypot(point.x - c.x, point.y - c.y) <= handleRadius) {
+      if (Math.hypot(worldPoint.x - c.x, worldPoint.y - c.y) <= handleRadius) {
         return c.handle;
       }
     }
     return null;
   };
 
-  // Hit test for item body (Accurately hits drawings, strokes, shapes, text, images)
-  const hitTestItem = (point: Point): DrawAction | null => {
-    for (let i = pageActions.length - 1; i >= 0; i--) {
-      const item = pageActions[i];
-      const bounds = getItemBounds(item);
+  // Hit test for item in World Coordinates
+  const hitTestItem = (worldPoint: Point): DrawAction | null => {
+    for (let i = actions.length - 1; i >= 0; i--) {
+      const item = actions[i];
+      const bounds = getActionBoundingBox(item);
       if (
-        point.x >= bounds.x &&
-        point.x <= bounds.x + bounds.w &&
-        point.y >= bounds.y &&
-        point.y <= bounds.y + bounds.h
+        worldPoint.x >= bounds.x &&
+        worldPoint.x <= bounds.x + bounds.w &&
+        worldPoint.y >= bounds.y &&
+        worldPoint.y <= bounds.y + bounds.h
       ) {
         if (item.tool === "pen" || item.tool === "highlighter" || item.tool === "eraser") {
           const strk = item as Stroke;
           const maxDistSq = Math.max(10, strk.width * 2 + 10) ** 2;
           for (let j = 0; j < strk.points.length - 1; j++) {
-            if (distToSegmentSquared(point, strk.points[j], strk.points[j + 1]) <= maxDistSq) {
+            if (distToSegmentSquared(worldPoint, strk.points[j], strk.points[j + 1]) <= maxDistSq) {
               return item;
             }
           }
@@ -715,48 +773,23 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     return null;
   };
 
-  // Wheel Zoom & Page Scroll Handling
+  // Wheel Zoom & Infinite Pan Navigation
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+
     if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
+      // Zoom into pointer anchor
       const zoomFactor = Math.exp(-e.deltaY * 0.003);
-      const newZoom = Math.min(
-        Math.max(Number((zoom * zoomFactor).toFixed(2)), 0.4),
-        3.0
-      );
-      if (newZoom === zoom) return;
-
-      const canvas = canvasRef.current;
-      const container = containerRef.current;
-      if (canvas && container) {
-        const rect = canvas.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const centerX = containerRect.left + containerRect.width / 2;
-        const centerY = containerRect.top + containerRect.height / 2;
-        const W = canvas.clientWidth;
-        const H = canvas.clientHeight;
-
-        const Cx = (e.clientX - rect.left) * (W / (rect.width || 1));
-        const Cy = (e.clientY - rect.top) * (H / (rect.height || 1));
-
-        const newPanX = e.clientX - centerX - (Cx - W / 2) * newZoom;
-        const newPanY = e.clientY - centerY - (Cy - H / 2) * newZoom;
-
-        setPan({ x: Math.round(newPanX), y: Math.round(newPanY) });
-      }
-
-      setZoom(newZoom);
+      const newZoom = zoom * zoomFactor;
+      setZoom(newZoom, { x: e.clientX, y: e.clientY });
       return;
     }
 
-    const scrollContainer = scrollContainerRef.current;
-    if (scrollContainer) {
-      scrollContainer.scrollBy({
-        top: e.deltaY,
-        left: e.deltaX,
-        behavior: "auto",
-      });
-    }
+    // Natural 2-finger Pan across infinite plane
+    setPan((prev) => ({
+      x: Math.round(prev.x - e.deltaX),
+      y: Math.round(prev.y - e.deltaY),
+    }));
   };
 
   // Pointer Down Handler
@@ -767,7 +800,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    // Two-Finger Gesture (Hand Move + Pinch Zoom at Hand Location)
+    // Two-Finger Gesture (Pinch Zoom & Hand Pan at finger centroid)
     if (activePointers.current.size === 2) {
       isDrawing.current = false;
       currentPoints.current = [];
@@ -789,40 +822,45 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       initialPinchDist.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       initialPinchMid.current = mid;
       initialPinchZoom.current = zoom;
-
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const W = canvas.clientWidth;
-        const H = canvas.clientHeight;
-        initialPinchContentPoint.current = {
-          x: (mid.x - rect.left) * (W / (rect.width || 1)),
-          y: (mid.y - rect.top) * (H / (rect.height || 1)),
-        };
-      }
+      initialPinchPan.current = { ...pan };
       return;
     }
 
-    // SELECT / CROP TOOL
-    if (activeTool === "select") {
-      const point = getCanvasPoint(e);
+    const worldPoint: Point = {
+      ...screenToWorld(e.clientX, e.clientY),
+      pressure: e.pointerType === "mouse" ? 0.5 : e.pressure > 0 ? e.pressure : 0.5,
+    };
 
+    // PAN MODE (Tool is Pan, Spacebar is pressed, or Middle Mouse button)
+    if (activeTool === "pan" || spacePressed || e.button === 1) {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      isPanning.current = true;
+      isSpacePanning.current = spacePressed;
+      setIsGrabbing(true);
+      panStart.current = { x: e.clientX, y: e.clientY };
+      panInitial.current = { ...pan };
+      return;
+    }
+
+    // SELECT TOOL
+    if (activeTool === "select") {
       // 1. Check if clicking on active resize handle
       if (selectedItems.length > 0) {
-        const handle = hitTestResizeHandle(point, selectedBounds);
+        const handle = hitTestResizeHandle(worldPoint, selectedBounds);
         if (handle) {
           e.preventDefault();
           (e.target as HTMLElement).setPointerCapture(e.pointerId);
           isResizing.current = true;
           activeResizeHandle.current = handle;
           resizeStartBounds.current = selectedBounds;
-          resizeStartPoint.current = point;
+          resizeStartPoint.current = worldPoint;
           return;
         }
       }
 
       // 2. Check if clicking on any drawn item or stroke
-      const hit = hitTestItem(point);
+      const hit = hitTestItem(worldPoint);
       if (hit) {
         // Double-click on text item to edit directly
         if (hit.tool === "text" && e.detail === 2) {
@@ -841,15 +879,14 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         e.preventDefault();
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
 
-        // If clicking on an already selected item in multi-select, keep group; else select single item
+        // Keep multi-selection or select single
         if (!selectedIds.includes(hit.id)) {
           setSelectedId(hit.id);
         }
 
         isDraggingItem.current = true;
-        dragStartPoint.current = point;
+        dragStartPoint.current = worldPoint;
 
-        // Store start positions for all currently selected items
         const targetItems = selectedIds.includes(hit.id)
           ? selectedItems
           : [hit];
@@ -864,19 +901,20 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
             const shp = item as ShapeStroke;
             return { id: item.id, startX: shp.startX, startY: shp.startY };
           }
-          const b = getItemBounds(item);
+          const b = getActionBoundingBox(item);
           return { id: item.id, startX: b.x, startY: b.y };
         });
         return;
       }
 
-      // 3. Clicked empty canvas: start drag crop / marquee box selection
+      // 3. Clicked empty canvas: start drag marquee selection in world coordinates
       e.preventDefault();
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       isMarqueeSelecting.current = true;
-      marqueeStart.current = point;
-      marqueeCurrent.current = point;
+      marqueeStart.current = worldPoint;
+      marqueeCurrent.current = worldPoint;
       setSelectedId(null);
+      setSelectedIds([]);
       return;
     }
 
@@ -886,48 +924,17 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       isMagicErasing.current = true;
       magicErasedIds.current = new Set();
-      const point = getCanvasPoint(e);
-      const hit = hitTestItem(point);
+      const hit = hitTestItem(worldPoint);
       if (hit) {
         magicErasedIds.current.add(hit.id);
-        deleteActions(pageIndex, [hit.id]);
+        deleteActions([hit.id]);
       }
       return;
     }
 
-    // PAN TOOL / Middle Click: Move Canvas
-    if (activeTool === "pan" || e.button === 1) {
-      e.preventDefault();
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
-      isPanning.current = true;
-      setIsGrabbing(true);
-      panStart.current = { x: e.clientX, y: e.clientY };
-      panInitial.current = { ...pan };
-      return;
-    }
-
-    // Drawing Tools
-    e.preventDefault();
-    (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
-    isDrawing.current = true;
-
-    const point = getCanvasPoint(e);
-
-    if (
-      activeTool === "pen" ||
-      activeTool === "eraser" ||
-      activeTool === "highlighter"
-    ) {
-      currentPoints.current = [point];
-    } else if (
-      activeTool === "rectangle" ||
-      activeTool === "circle" ||
-      activeTool === "line" ||
-      activeTool === "arrow"
-    ) {
-      shapeStart.current = { x: point.x, y: point.y };
-    } else if (activeTool === "text") {
-      const hit = hitTestItem(point);
+    // TEXT TOOL
+    if (activeTool === "text") {
+      const hit = hitTestItem(worldPoint);
       if (hit && hit.tool === "text") {
         const txt = hit as TextElement;
         startEditingText({
@@ -940,55 +947,79 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         });
       } else {
         startEditingText({
-          x: point.x,
-          y: point.y,
+          x: worldPoint.x,
+          y: worldPoint.y,
         });
       }
       isDrawing.current = false;
+      return;
+    }
+
+    // DRAWING TOOLS (Pen, Highlighter, Pixel Eraser, Shapes)
+    e.preventDefault();
+    (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
+    isDrawing.current = true;
+
+    if (
+      activeTool === "pen" ||
+      activeTool === "eraser" ||
+      activeTool === "highlighter"
+    ) {
+      currentPoints.current = [worldPoint];
+    } else if (
+      activeTool === "rectangle" ||
+      activeTool === "circle" ||
+      activeTool === "line" ||
+      activeTool === "arrow"
+    ) {
+      shapeStart.current = { x: worldPoint.x, y: worldPoint.y };
     }
   };
 
   // Pointer Move Handler
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const scrollContainer = scrollContainerRef.current;
     const canvas = canvasRef.current;
 
-    // Dynamic Cursor on Hover in Select Mode (direct style update, 0 React re-renders)
+    const worldPoint: Point = {
+      ...screenToWorld(e.clientX, e.clientY),
+      pressure: e.pointerType === "mouse" ? 0.5 : e.pressure > 0 ? e.pressure : 0.5,
+    };
+
+    // Dynamic Cursor on Hover in Select Mode
     if (
       activeTool === "select" &&
       !isDraggingItem.current &&
       !isResizing.current &&
       !isPanning.current &&
       !isMarqueeSelecting.current &&
+      !spacePressed &&
       canvas
     ) {
-      const point = getCanvasPoint(e);
       if (selectedItems.length > 0) {
-        const handle = hitTestResizeHandle(point, selectedBounds);
+        const handle = hitTestResizeHandle(worldPoint, selectedBounds);
         if (handle === "nw" || handle === "se") {
           canvas.style.cursor = "nwse-resize";
         } else if (handle === "ne" || handle === "sw") {
           canvas.style.cursor = "nesw-resize";
-        } else if (hitTestItem(point)) {
+        } else if (hitTestItem(worldPoint)) {
           canvas.style.cursor = "move";
         } else {
           canvas.style.cursor = "default";
         }
-      } else if (hitTestItem(point)) {
+      } else if (hitTestItem(worldPoint)) {
         canvas.style.cursor = "pointer";
       } else {
         canvas.style.cursor = "crosshair";
       }
     }
 
-    // Two-Finger Hand Pan & Pinch Zoom at Hand Location
+    // Two-Finger Pinch Zoom & Pan at finger centroid
     if (
       activePointers.current.size === 2 &&
       initialPinchDist.current &&
       initialPinchDist.current > 5 &&
-      initialPinchMid.current &&
-      initialPinchContentPoint.current
+      initialPinchMid.current
     ) {
       e.preventDefault();
       const pts = Array.from(activePointers.current.values());
@@ -999,59 +1030,58 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       const currentDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
       const factor = currentDist / initialPinchDist.current;
       const targetZoom = Math.min(
-        Math.max(Number((initialPinchZoom.current * factor).toFixed(2)), 0.4),
-        3.0
+        Math.max(Number((initialPinchZoom.current * factor).toFixed(3)), 0.1),
+        5.0
       );
 
-      const canvas = canvasRef.current;
-      const container = containerRef.current;
-      if (canvas && container) {
-        const containerRect = container.getBoundingClientRect();
-        const centerX = containerRect.left + containerRect.width / 2;
-        const centerY = containerRect.top + containerRect.height / 2;
-        const W = canvas.clientWidth;
-        const H = canvas.clientHeight;
-        const Cx = initialPinchContentPoint.current.x;
-        const Cy = initialPinchContentPoint.current.y;
-
-        const newPanX = currentMid.x - centerX - (Cx - W / 2) * targetZoom;
-        const newPanY = currentMid.y - centerY - (Cy - H / 2) * targetZoom;
-
-        setPan({ x: Math.round(newPanX), y: Math.round(newPanY) });
-      }
+      // Pivot around initial mid
+      const k = targetZoom / initialPinchZoom.current;
+      const newPanX = currentMid.x - (initialPinchMid.current.x - initialPinchPan.current.x) * k;
+      const newPanY = currentMid.y - (initialPinchMid.current.y - initialPinchPan.current.y) * k;
 
       setZoom(targetZoom);
+      setPan({ x: Math.round(newPanX), y: Math.round(newPanY) });
+      return;
+    }
+
+    // Single Pointer Canvas Panning
+    if (isPanning.current && activePointers.current.size === 1) {
+      e.preventDefault();
+      const dx = e.clientX - panStart.current.x;
+      const dy = e.clientY - panStart.current.y;
+      setPan({
+        x: Math.round(panInitial.current.x + dx),
+        y: Math.round(panInitial.current.y + dy),
+      });
       return;
     }
 
     // Magic Eraser drag deleting
     if (isMagicErasing.current) {
       e.preventDefault();
-      const point = getCanvasPoint(e);
-      const hit = hitTestItem(point);
+      const hit = hitTestItem(worldPoint);
       if (hit && !magicErasedIds.current.has(hit.id)) {
         magicErasedIds.current.add(hit.id);
-        deleteActions(pageIndex, [hit.id]);
+        deleteActions([hit.id]);
       }
       return;
     }
 
-    // Live Marquee Box / Crop Selection Drag
+    // Live Marquee Selection Drag
     if (isMarqueeSelecting.current && marqueeStart.current) {
       e.preventDefault();
-      marqueeCurrent.current = getCanvasPoint(e);
-      redrawCanvas();
+      marqueeCurrent.current = worldPoint;
+      scheduleRedraw();
       return;
     }
 
-    // Scaling / Resizing Item(s) via Corner Handle
+    // Resizing Item(s) via Corner Handle
     if (isResizing.current && activeResizeHandle.current && selectedItem) {
       e.preventDefault();
-      const point = getCanvasPoint(e);
       const handle = activeResizeHandle.current;
       const b = resizeStartBounds.current;
-      const dx = point.x - resizeStartPoint.current.x;
-      const dy = point.y - resizeStartPoint.current.y;
+      const dx = worldPoint.x - resizeStartPoint.current.x;
+      const dy = worldPoint.y - resizeStartPoint.current.y;
 
       const isImg = selectedItem.tool === "image";
       const aspect = b.w / Math.max(1, b.h);
@@ -1080,7 +1110,6 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       }
 
       updateActionBounds(
-        pageIndex,
         selectedItem.id,
         Math.round(newX),
         Math.round(newY),
@@ -1090,16 +1119,14 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
-    // Drag Moving Selected Item(s) / Drawings
+    // Drag Moving Selected Item(s)
     if (isDraggingItem.current && dragItemsStartPositions.current.length > 0) {
       e.preventDefault();
-      const point = getCanvasPoint(e);
-      const dx = point.x - dragStartPoint.current.x;
-      const dy = point.y - dragStartPoint.current.y;
+      const dx = worldPoint.x - dragStartPoint.current.x;
+      const dy = worldPoint.y - dragStartPoint.current.y;
 
       for (const itemPos of dragItemsStartPositions.current) {
         updateActionPosition(
-          pageIndex,
           itemPos.id,
           Math.round(itemPos.startX + dx),
           Math.round(itemPos.startY + dy)
@@ -1108,24 +1135,8 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
-    // Single Pointer Canvas Panning
-    if (isPanning.current && activePointers.current.size === 1) {
-      e.preventDefault();
-      const dx = e.clientX - panStart.current.x;
-      const dy = e.clientY - panStart.current.y;
-      setPan({
-        x: Math.round(panInitial.current.x + dx),
-        y: Math.round(panInitial.current.y + dy),
-      });
-      return;
-    }
-
     if (!isDrawing.current || !canvas) return;
     e.preventDefault();
-
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.clientWidth / (rect.width || 1);
-    const scaleY = canvas.clientHeight / (rect.height || 1);
 
     if (
       activeTool === "pen" ||
@@ -1137,22 +1148,26 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
 
       if (coalesced.length > 0) {
         for (const ce of coalesced) {
+          const wp = screenToWorld(ce.clientX, ce.clientY);
           currentPoints.current.push({
-            x: (ce.clientX - rect.left) * scaleX,
-            y: (ce.clientY - rect.top) * scaleY,
+            x: wp.x,
+            y: wp.y,
             pressure: e.pointerType === "mouse" ? 0.5 : ce.pressure > 0 ? ce.pressure : 0.5,
           });
         }
       } else {
-        currentPoints.current.push(getCanvasPoint(e));
+        currentPoints.current.push(worldPoint);
       }
 
+      // Redraw scene + live stroke preview
       redrawCanvas();
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       const dpr = window.devicePixelRatio || 1;
       ctx.save();
       ctx.scale(dpr, dpr);
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(zoom, zoom);
 
       if (activeTool === "eraser") {
         drawEraserStroke(ctx, {
@@ -1181,20 +1196,22 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         activeTool === "arrow") &&
       shapeStart.current
     ) {
-      const point = getCanvasPoint(e);
       redrawCanvas();
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       const dpr = window.devicePixelRatio || 1;
       ctx.save();
       ctx.scale(dpr, dpr);
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(zoom, zoom);
+
       drawShape(ctx, {
         id: "preview",
         tool: activeTool,
         startX: shapeStart.current.x,
         startY: shapeStart.current.y,
-        endX: point.x,
-        endY: point.y,
+        endX: worldPoint.x,
+        endY: worldPoint.y,
         color: strokeColor,
         width: strokeWidth,
       });
@@ -1209,7 +1226,6 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     if (activePointers.current.size < 2) {
       initialPinchDist.current = null;
       initialPinchMid.current = null;
-      initialPinchContentPoint.current = null;
       isGestureZooming.current = false;
     }
 
@@ -1225,7 +1241,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       return;
     }
 
-    // Finish Marquee Box / Crop Selection
+    // Finish Marquee Box Selection
     if (isMarqueeSelecting.current && marqueeStart.current && marqueeCurrent.current) {
       isMarqueeSelecting.current = false;
       const mx = Math.min(marqueeStart.current.x, marqueeCurrent.current.x);
@@ -1233,11 +1249,10 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
       const mw = Math.abs(marqueeCurrent.current.x - marqueeStart.current.x);
       const mh = Math.abs(marqueeCurrent.current.y - marqueeStart.current.y);
 
-      if (mw > 6 || mh > 6) {
+      if (mw > 4 / zoom || mh > 4 / zoom) {
         const captured: DrawAction[] = [];
-        for (const item of pageActions) {
-          const b = getItemBounds(item);
-          // Check AABB intersection
+        for (const item of actions) {
+          const b = getActionBoundingBox(item);
           if (
             b.x + b.w >= mx &&
             b.x <= mx + mw &&
@@ -1253,14 +1268,16 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           setSelectedIds(captured.map((c) => c.id));
         } else {
           setSelectedId(null);
+          setSelectedIds([]);
         }
       } else {
         setSelectedId(null);
+        setSelectedIds([]);
       }
 
       marqueeStart.current = null;
       marqueeCurrent.current = null;
-      redrawCanvas();
+      scheduleRedraw();
       return;
     }
 
@@ -1279,10 +1296,13 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     if (!isDrawing.current) return;
     isDrawing.current = false;
 
-    const point = getCanvasPoint(e);
+    const worldPoint: Point = {
+      ...screenToWorld(e.clientX, e.clientY),
+      pressure: e.pointerType === "mouse" ? 0.5 : e.pressure > 0 ? e.pressure : 0.5,
+    };
 
     if (activeTool === "pen" || activeTool === "highlighter") {
-      currentPoints.current.push(point);
+      currentPoints.current.push(worldPoint);
       if (currentPoints.current.length >= 2) {
         const stroke: Stroke = {
           id: crypto.randomUUID(),
@@ -1292,10 +1312,10 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           width: strokeWidth,
           opacity: activeTool === "highlighter" ? 0.35 : 1,
         };
-        addAction(pageIndex, stroke);
+        addAction(stroke);
       }
     } else if (activeTool === "eraser") {
-      currentPoints.current.push(point);
+      currentPoints.current.push(worldPoint);
       if (currentPoints.current.length >= 2) {
         const stroke: Stroke = {
           id: crypto.randomUUID(),
@@ -1305,7 +1325,7 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
           width: strokeWidth,
           opacity: 1,
         };
-        addAction(pageIndex, stroke);
+        addAction(stroke);
       }
     } else if (
       (activeTool === "rectangle" ||
@@ -1319,12 +1339,12 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
         tool: activeTool,
         startX: shapeStart.current.x,
         startY: shapeStart.current.y,
-        endX: point.x,
-        endY: point.y,
+        endX: worldPoint.x,
+        endY: worldPoint.y,
         color: strokeColor,
         width: strokeWidth,
       };
-      addAction(pageIndex, shape);
+      addAction(shape);
       shapeStart.current = null;
     }
 
@@ -1335,7 +1355,6 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     activePointers.current.delete(e.pointerId);
     initialPinchDist.current = null;
     initialPinchMid.current = null;
-    initialPinchContentPoint.current = null;
     isGestureZooming.current = false;
     isResizing.current = false;
     isDraggingItem.current = false;
@@ -1349,204 +1368,222 @@ export function CanvasPage({ pageIndex }: CanvasPageProps) {
     shapeStart.current = null;
     marqueeStart.current = null;
     marqueeCurrent.current = null;
-    redrawCanvas();
+    scheduleRedraw();
   };
 
   // Base cursor calculation
   const canvasCursor = useMemo(() => {
+    if (spacePressed || activeTool === "pan") return isGrabbing ? "grabbing" : "grab";
     if (activeTool === "select") return "default";
-    if (activeTool === "pan") return isGrabbing ? "grabbing" : "grab";
     if (activeTool === "text") return "text";
     if (activeTool === "eraser" || activeTool === "magic-eraser") return "cell";
     return "crosshair";
-  }, [activeTool, isGrabbing]);
+  }, [activeTool, spacePressed, isGrabbing]);
+
+  // Screen Coordinates for Inline Text Editor
+  const editingTextScreenPos = useMemo(() => {
+    if (!editingText) return null;
+    return worldToScreen(editingText.x, editingText.y);
+  }, [editingText, worldToScreen]);
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden"
+      className="relative w-full h-full overflow-hidden select-none bg-[var(--wb-bg)]"
     >
-      {/* Discreet page number badge */}
-      <div className="absolute top-3 left-4 z-10 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-zinc-400 dark:text-zinc-500 pointer-events-none select-none">
-        Page {pageIndex + 1}
-      </div>
-
-      <div
-        className="relative w-full h-full flex items-center justify-center"
+      {/* ── Main Infinite Canvas with Hardware Grid Background ── */}
+      <canvas
+        ref={canvasRef}
+        className="canvas-grid-bg absolute inset-0 w-full h-full"
         style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          transformOrigin: "center center",
-          transition:
-            isPanning.current ||
-            isDraggingItem.current ||
-            isResizing.current ||
-            isMarqueeSelecting.current ||
-            isGestureZooming.current
-              ? "none"
-              : "transform 0.12s ease-out",
+          touchAction: "none",
+          cursor: canvasCursor,
+          backgroundPosition: `${pan.x}px ${pan.y}px`,
+          backgroundSize: `${24 * zoom}px ${24 * zoom}px`,
         }}
-      >
-        <canvas
-          ref={canvasRef}
-          className="canvas-grid-bg w-full h-full rounded-2xl shadow-xl ring-1 ring-black/5 dark:ring-white/10"
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+      />
+
+      {/* ── Inline Text Editor Overlay (Positioned in Screen Space) ── */}
+      {editingText && editingTextScreenPos && (
+        <div
+          className="absolute z-30 pointer-events-auto"
           style={{
-            touchAction: "none",
-            cursor: canvasCursor,
+            left: `${editingTextScreenPos.x}px`,
+            top: `${editingTextScreenPos.y}px`,
+            transform: `scale(${zoom})`,
+            transformOrigin: "top left",
           }}
-          onWheel={handleWheel}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerLeave={handlePointerUp}
-          onPointerCancel={handlePointerCancel}
-        />
-
-        {/* ── Inline Text Editor on Canvas (Inverse-Scaled to keep readable size) ── */}
-        {editingText && (
-          <div
-            className="absolute z-30 pointer-events-auto"
-            style={{
-              left: `${editingText.x}px`,
-              top: `${editingText.y}px`,
-              transform: `scale(${1 / zoom})`,
-              transformOrigin: "top left",
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+        >
+          <textarea
+            ref={textareaRef}
+            value={editingText.text}
+            onChange={(e) => {
+              const val = e.target.value;
+              setEditingText((prev) => (prev ? { ...prev, text: val } : null));
             }}
-            onPointerDown={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-          >
-            <textarea
-              ref={textareaRef}
-              value={editingText.text}
-              onChange={(e) => {
-                const val = e.target.value;
-                setEditingText((prev) => (prev ? { ...prev, text: val } : null));
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  commitText();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  if (editingText.text.trim()) {
-                    commitText();
-                  } else {
-                    cancelText();
-                  }
-                }
-              }}
-              onBlur={() => {
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
                 commitText();
-              }}
-              placeholder="Type text..."
-              rows={Math.max(1, (editingText.text.match(/\n/g) || []).length + 1)}
-              className="wb-inline-text-editor"
-              style={{
-                color: editingText.color,
-                fontSize: `${editingText.fontSize}px`,
-                lineHeight: 1.25,
-                width: `${Math.max(
-                  140,
-                  Math.max(...editingText.text.split("\n").map((l) => l.length), 0) *
-                    (editingText.fontSize * 0.65) +
-                    32
-                )}px`,
-              }}
-              autoFocus
-            />
-          </div>
-        )}
-
-        {/* ── Contextual Pop Menu above Selected Drawing / Crop Object (Inverse-Scaled) ── */}
-        {selectedItems.length > 0 && activeTool === "select" && !editingText && (
-          <div
-            className="wb-tooltip absolute"
-            style={{
-              left: `${selectedBounds.x + selectedBounds.w / 2}px`,
-              top: `${Math.max(35, selectedBounds.y - 12)}px`,
-              transform: `translate(-50%, -100%) scale(${1 / zoom})`,
-              transformOrigin: "bottom center",
-              pointerEvents: "auto",
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                if (editingText.text.trim()) {
+                  commitText();
+                } else {
+                  cancelText();
+                }
+              }
             }}
-            onPointerDown={(e) => e.stopPropagation()}
+            onBlur={() => {
+              commitText();
+            }}
+            placeholder="Type text..."
+            rows={Math.max(1, (editingText.text.match(/\n/g) || []).length + 1)}
+            className="wb-inline-text-editor"
+            style={{
+              color: editingText.color,
+              fontSize: `${editingText.fontSize}px`,
+              lineHeight: 1.25,
+              width: `${Math.max(
+                140,
+                Math.max(...editingText.text.split("\n").map((l) => l.length), 0) *
+                  (editingText.fontSize * 0.65) +
+                  32
+              )}px`,
+            }}
+            autoFocus
+          />
+        </div>
+      )}
+
+      {/* ── Contextual Floating Menu above Selected Item(s) ── */}
+      {selectedItems.length > 0 && activeTool === "select" && !editingText && selectionScreenBox && (
+        <div
+          className="wb-tooltip absolute"
+          style={{
+            left: `${selectionScreenBox.centerX}px`,
+            top: `${Math.max(45, selectionScreenBox.topY - 10)}px`,
+            transform: `translate(-50%, -100%)`,
+            pointerEvents: "auto",
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {selectedItem?.tool === "text" && (
+            <>
+              <button
+                type="button"
+                className="wb-tool"
+                title="Edit text"
+                aria-label="Edit text"
+                onClick={() => {
+                  const txt = selectedItem as TextElement;
+                  startEditingText({
+                    id: txt.id,
+                    x: txt.x,
+                    y: txt.y,
+                    text: txt.text,
+                    fontSize: txt.fontSize,
+                    color: txt.color,
+                  });
+                }}
+              >
+                <Type />
+              </button>
+              <span
+                className="wb-divider"
+                style={{ height: "16px", margin: "0 2px" }}
+              />
+            </>
+          )}
+          <button
+            type="button"
+            className="wb-tool wb-tool-delete"
+            title={selectedItems.length > 1 ? `Delete ${selectedItems.length} items` : "Delete"}
+            aria-label="Delete selected items"
+            onClick={deleteSelectedAction}
           >
-            {selectedItem?.tool === "text" && (
-              <>
-                <button
-                  type="button"
-                  className="wb-tool"
-                  title="Edit text"
-                  aria-label="Edit text"
-                  onClick={() => {
-                    const txt = selectedItem as TextElement;
-                    startEditingText({
-                      id: txt.id,
-                      x: txt.x,
-                      y: txt.y,
-                      text: txt.text,
-                      fontSize: txt.fontSize,
-                      color: txt.color,
-                    });
-                  }}
-                >
-                  <Type />
-                </button>
-                <span
-                  className="wb-divider"
-                  style={{ height: "16px", margin: "0 2px" }}
-                />
-              </>
-            )}
-            <button
-              type="button"
-              className="wb-tool wb-tool-delete"
-              title={selectedItems.length > 1 ? `Delete ${selectedItems.length} items` : "Delete"}
-              aria-label="Delete selected items"
-              onClick={() => deleteSelectedAction(pageIndex)}
-            >
-              <Trash2 />
-            </button>
-            {selectedItem && (
-              <>
-                <span
-                  className="wb-divider"
-                  style={{ height: "16px", margin: "0 2px" }}
-                />
-                <button
-                  type="button"
-                  className="wb-tool"
-                  title="Bring forward"
-                  aria-label="Bring forward"
-                  onClick={() => bringForward(pageIndex, selectedItem.id)}
-                >
-                  <BringToFront />
-                </button>
-                <button
-                  type="button"
-                  className="wb-tool"
-                  title="Send backward"
-                  aria-label="Send backward"
-                  onClick={() => sendBackward(pageIndex, selectedItem.id)}
-                >
-                  <SendToBack />
-                </button>
-              </>
-            )}
-            <span
-              className="wb-divider"
-              style={{ height: "16px", margin: "0 2px" }}
-            />
-            <button
-              type="button"
-              className="wb-tool"
-              title="Deselect"
-              aria-label="Deselect"
-              onClick={() => setSelectedId(null)}
-            >
-              <X />
-            </button>
-          </div>
-        )}
+            <Trash2 />
+          </button>
+          {selectedItem && (
+            <>
+              <span
+                className="wb-divider"
+                style={{ height: "16px", margin: "0 2px" }}
+              />
+              <button
+                type="button"
+                className="wb-tool"
+                title="Bring forward"
+                aria-label="Bring forward"
+                onClick={() => bringForward(selectedItem.id)}
+              >
+                <BringToFront />
+              </button>
+              <button
+                type="button"
+                className="wb-tool"
+                title="Send backward"
+                aria-label="Send backward"
+                onClick={() => sendBackward(selectedItem.id)}
+              >
+                <SendToBack />
+              </button>
+            </>
+          )}
+          <span
+            className="wb-divider"
+            style={{ height: "16px", margin: "0 2px" }}
+          />
+          <button
+            type="button"
+            className="wb-tool"
+            title="Deselect (Esc)"
+            aria-label="Deselect"
+            onClick={() => {
+              setSelectedId(null);
+              setSelectedIds([]);
+            }}
+          >
+            <X />
+          </button>
+        </div>
+      )}
+
+      {/* ── Bottom-Right Infinite Canvas Navigation Bar (Quick Fit & Center) ── */}
+      <div className="absolute bottom-4 right-4 z-20 flex items-center gap-1.5 p-1.5 rounded-xl bg-[var(--wb-panel)] border border-[var(--wb-border)] shadow-md backdrop-blur-md">
+        <button
+          type="button"
+          title="Fit to content (Shift + 1)"
+          aria-label="Fit to content"
+          className="wb-tool"
+          onClick={() => {
+            fitToContent({ width: window.innerWidth, height: window.innerHeight });
+            showNotice("Fitted to content");
+          }}
+        >
+          <Maximize2 />
+        </button>
+        <button
+          type="button"
+          title="Reset view (0)"
+          aria-label="Reset view"
+          className="wb-tool"
+          onClick={() => {
+            resetZoom({ width: window.innerWidth, height: window.innerHeight });
+            showNotice("View centered at 100%");
+          }}
+        >
+          <Compass />
+        </button>
       </div>
     </div>
   );

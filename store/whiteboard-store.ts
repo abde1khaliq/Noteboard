@@ -66,34 +66,112 @@ export interface ImageElement {
 
 export type DrawAction = Stroke | ShapeStroke | TextElement | ImageElement;
 
-export interface Page {
-  id: string;
-  actions: DrawAction[];
-}
+const MAX_HISTORY = 50;
 
-const MAX_HISTORY = 40;
-
-function getStrokeBoundingBox(stroke: Stroke): { x: number; y: number; w: number; h: number } {
+export function getStrokeBoundingBox(stroke: Stroke): { x: number; y: number; w: number; h: number } {
   if (stroke.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
   let minX = stroke.points[0].x;
   let maxX = stroke.points[0].x;
   let minY = stroke.points[0].y;
   let maxY = stroke.points[0].y;
-  for (const p of stroke.points) {
+  for (let i = 1; i < stroke.points.length; i++) {
+    const p = stroke.points[i];
     if (p.x < minX) minX = p.x;
     if (p.x > maxX) maxX = p.x;
     if (p.y < minY) minY = p.y;
     if (p.y > maxY) maxY = p.y;
   }
+  const pad = Math.max(4, stroke.width * 1.5);
   return {
-    x: minX,
-    y: minY,
-    w: Math.max(1, maxX - minX),
-    h: Math.max(1, maxY - minY),
+    x: minX - pad,
+    y: minY - pad,
+    w: Math.max(1, maxX - minX + pad * 2),
+    h: Math.max(1, maxY - minY + pad * 2),
   };
 }
 
-// ── Store ──
+export function getActionBoundingBox(item: DrawAction): { x: number; y: number; w: number; h: number } {
+  if (item.tool === "image") {
+    const img = item as ImageElement;
+    return { x: img.x, y: img.y, w: img.width, h: img.height };
+  }
+  if (item.tool === "text") {
+    const txt = item as TextElement;
+    const lines = (txt.text || "").split("\n");
+    const maxLineLen = Math.max(...lines.map((l) => l.length), 1);
+    const w = Math.max(24, maxLineLen * (txt.fontSize * 0.62));
+    const lineHeight = txt.fontSize * 1.25;
+    const h = Math.max(txt.fontSize, lines.length * lineHeight);
+    return { x: txt.x, y: txt.y, w, h: h + 4 };
+  }
+  if (
+    item.tool === "rectangle" ||
+    item.tool === "circle" ||
+    item.tool === "line" ||
+    item.tool === "arrow"
+  ) {
+    const shp = item as ShapeStroke;
+    const minX = Math.min(shp.startX, shp.endX);
+    const maxX = Math.max(shp.startX, shp.endX);
+    const minY = Math.min(shp.startY, shp.endY);
+    const maxY = Math.max(shp.startY, shp.endY);
+    return {
+      x: minX,
+      y: minY,
+      w: Math.max(10, maxX - minX),
+      h: Math.max(10, maxY - minY),
+    };
+  }
+  if (item.tool === "pen" || item.tool === "highlighter" || item.tool === "eraser") {
+    return getStrokeBoundingBox(item as Stroke);
+  }
+  return { x: 0, y: 0, w: 0, h: 0 };
+}
+
+export function getContentBounds(actions: DrawAction[]): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+} | null {
+  if (actions.length === 0) return null;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const item of actions) {
+    const b = getActionBoundingBox(item);
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.w > maxX) maxX = b.x + b.w;
+    if (b.y + b.h > maxY) maxY = b.y + b.h;
+  }
+
+  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) {
+    return null;
+  }
+
+  const width = maxX - minX;
+  const height = maxY - minY;
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+    centerX: minX + width / 2,
+    centerY: minY + height / 2,
+  };
+}
+
+// ── Store Interface ──
 interface WhiteboardState {
   // Tool state
   activeTool: Tool;
@@ -109,53 +187,42 @@ interface WhiteboardState {
   setColor: (color: string) => void;
   setWidth: (width: number) => void;
 
-  // Zoom state
+  // Viewport / Camera state (Infinite Canvas)
+  pan: { x: number; y: number };
   zoom: number;
-  setZoom: (zoom: number) => void;
-  zoomIn: () => void;
-  zoomOut: () => void;
-  resetZoom: () => void;
+  setPan: (pan: { x: number; y: number } | ((prev: { x: number; y: number }) => { x: number; y: number })) => void;
+  setZoom: (zoom: number, anchor?: { x: number; y: number }) => void;
+  zoomIn: (anchor?: { x: number; y: number }) => void;
+  zoomOut: (anchor?: { x: number; y: number }) => void;
+  resetZoom: (viewport?: { width: number; height: number }) => void;
+  fitToContent: (viewport?: { width: number; height: number }) => void;
 
-  // Pages
-  pages: Page[];
-  activePageIndex: number;
-  addPage: () => void;
-  setActivePage: (index: number) => void;
-  clearPage: (pageIndex: number) => void;
-
-  // Actions on current page
-  addAction: (pageIndex: number, action: DrawAction) => void;
-  updateActionPosition: (
-    pageIndex: number,
-    actionId: string,
-    x: number,
-    y: number
-  ) => void;
+  // Unified Infinite Canvas Actions
+  actions: DrawAction[];
+  addAction: (action: DrawAction) => void;
+  updateActionPosition: (actionId: string, x: number, y: number) => void;
   updateActionBounds: (
-    pageIndex: number,
     actionId: string,
     x: number,
     y: number,
     width: number,
     height: number
   ) => void;
-  updateActionText: (
-    pageIndex: number,
-    actionId: string,
-    text: string
-  ) => void;
-  bringForward: (pageIndex: number, actionId: string) => void;
-  sendBackward: (pageIndex: number, actionId: string) => void;
-  deleteSelectedAction: (pageIndex: number) => void;
-  deleteActions: (pageIndex: number, actionIds: string[]) => void;
+  updateActionText: (actionId: string, text: string) => void;
+  bringForward: (actionId: string) => void;
+  sendBackward: (actionId: string) => void;
+  deleteSelectedAction: () => void;
+  deleteActions: (actionIds: string[]) => void;
+  selectAll: () => void;
+  clearBoard: () => void;
 
-  // Snapshot-based Undo / Redo per page
-  undoHistory: Map<string, DrawAction[][]>;
-  redoHistory: Map<string, DrawAction[][]>;
-  undo: (pageIndex: number) => void;
-  redo: (pageIndex: number) => void;
-  canUndo: (pageIndex: number) => boolean;
-  canRedo: (pageIndex: number) => boolean;
+  // History (Undo / Redo)
+  undoHistory: DrawAction[][];
+  redoHistory: DrawAction[][];
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
 
   // Toast / Notices
   notice: string;
@@ -169,7 +236,6 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   selectedIds: [],
   strokeColor: "#202124",
   strokeWidth: 4,
-  zoom: 1,
 
   setTool: (tool) =>
     set((state) => ({
@@ -191,81 +257,105 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   setColor: (color) => set({ strokeColor: color }),
   setWidth: (width) => set({ strokeWidth: width }),
 
-  setZoom: (zoom) =>
-    set({
-      zoom: Math.min(Math.max(Number(zoom.toFixed(2)), 0.4), 3.0),
-    }),
-  zoomIn: () =>
-    set((s) => ({
-      zoom: Math.min(Number((s.zoom + 0.15).toFixed(2)), 3.0),
-    })),
-  zoomOut: () =>
-    set((s) => ({
-      zoom: Math.max(Number((s.zoom - 0.15).toFixed(2)), 0.4),
-    })),
-  resetZoom: () => set({ zoom: 1 }),
+  // Viewport State
+  pan: { x: 0, y: 0 },
+  zoom: 1,
 
-  pages: [{ id: crypto.randomUUID(), actions: [] }],
-  activePageIndex: 0,
-
-  addPage: () =>
+  setPan: (panOrUpdater) =>
     set((state) => ({
-      pages: [...state.pages, { id: crypto.randomUUID(), actions: [] }],
+      pan: typeof panOrUpdater === "function" ? panOrUpdater(state.pan) : panOrUpdater,
     })),
 
-  setActivePage: (index) =>
-    set({ activePageIndex: index, selectedId: null, selectedIds: [] }),
-
-  clearPage: (pageIndex) =>
+  setZoom: (newZoom, anchor) =>
     set((state) => {
-      const page = state.pages[pageIndex];
-      if (!page || page.actions.length === 0) return state;
+      const clampedZoom = Math.min(Math.max(Number(newZoom.toFixed(3)), 0.1), 5.0);
+      if (clampedZoom === state.zoom) return state;
 
-      const pages = [...state.pages];
-      const undoHistory = new Map(state.undoHistory);
-      const redoHistory = new Map(state.redoHistory);
+      if (anchor) {
+        // Zoom anchored at specific screen coordinate
+        const k = clampedZoom / state.zoom;
+        const newPanX = anchor.x - (anchor.x - state.pan.x) * k;
+        const newPanY = anchor.y - (anchor.y - state.pan.y) * k;
+        return {
+          zoom: clampedZoom,
+          pan: { x: Math.round(newPanX), y: Math.round(newPanY) },
+        };
+      }
 
-      const pastSnapshots = undoHistory.get(page.id) || [];
-      undoHistory.set(
-        page.id,
-        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-      redoHistory.delete(page.id);
-
-      pages[pageIndex] = { ...page, actions: [] };
-      return { pages, undoHistory, redoHistory, selectedId: null, selectedIds: [] };
+      return { zoom: clampedZoom };
     }),
 
-  addAction: (pageIndex, action) =>
+  zoomIn: (anchor) => {
+    const current = get().zoom;
+    const factor = current < 0.5 ? 1.25 : 1.2;
+    get().setZoom(current * factor, anchor);
+  },
+
+  zoomOut: (anchor) => {
+    const current = get().zoom;
+    const factor = current < 0.5 ? 1.25 : 1.2;
+    get().setZoom(current / factor, anchor);
+  },
+
+  resetZoom: (viewport) => {
+    if (viewport && viewport.width > 0 && viewport.height > 0) {
+      const content = getContentBounds(get().actions);
+      if (content) {
+        // Center the content at 100% zoom
+        const panX = viewport.width / 2 - content.centerX;
+        const panY = viewport.height / 2 - content.centerY;
+        set({ zoom: 1, pan: { x: Math.round(panX), y: Math.round(panY) } });
+        return;
+      }
+    }
+    set({ zoom: 1, pan: { x: 0, y: 0 } });
+  },
+
+  fitToContent: (viewport) => {
+    const content = getContentBounds(get().actions);
+    const vw = viewport?.width || (typeof window !== "undefined" ? window.innerWidth : 1200);
+    const vh = viewport?.height || (typeof window !== "undefined" ? window.innerHeight : 800);
+
+    if (!content || content.width === 0 || content.height === 0) {
+      set({ zoom: 1, pan: { x: 0, y: 0 } });
+      return;
+    }
+
+    const padding = 80;
+    const availableW = Math.max(100, vw - padding * 2);
+    const availableH = Math.max(100, vh - padding * 2);
+
+    const fitZoom = Math.min(
+      Math.max(
+        Number(Math.min(availableW / content.width, availableH / content.height).toFixed(2)),
+        0.1
+      ),
+      2.0
+    );
+
+    const panX = vw / 2 - content.centerX * fitZoom;
+    const panY = vh / 2 - content.centerY * fitZoom;
+
+    set({
+      zoom: fitZoom,
+      pan: { x: Math.round(panX), y: Math.round(panY) },
+    });
+  },
+
+  // Actions
+  actions: [],
+
+  addAction: (action) =>
+    set((state) => ({
+      undoHistory: [...state.undoHistory, state.actions].slice(-MAX_HISTORY),
+      redoHistory: [],
+      actions: [...state.actions, action],
+    })),
+
+  updateActionPosition: (actionId, x, y) =>
     set((state) => {
-      const page = state.pages[pageIndex];
-      if (!page) return state;
-
-      const pages = [...state.pages];
-      const undoHistory = new Map(state.undoHistory);
-      const redoHistory = new Map(state.redoHistory);
-
-      const pastSnapshots = undoHistory.get(page.id) || [];
-      undoHistory.set(
-        page.id,
-        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-      redoHistory.delete(page.id);
-
-      pages[pageIndex] = {
-        ...page,
-        actions: [...page.actions, action],
-      };
-      return { pages, undoHistory, redoHistory };
-    }),
-
-  updateActionPosition: (pageIndex, actionId, x, y) =>
-    set((state) => {
-      const page = state.pages[pageIndex];
-      if (!page) return state;
-
       let changed = false;
-      const newActions = page.actions.map((act) => {
+      const newActions = state.actions.map((act) => {
         if (act.id !== actionId) return act;
         changed = true;
         if (act.tool === "image" || act.tool === "text") {
@@ -304,18 +394,13 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       });
 
       if (!changed) return state;
-      const pages = [...state.pages];
-      pages[pageIndex] = { ...page, actions: newActions };
-      return { pages };
+      return { actions: newActions };
     }),
 
-  updateActionBounds: (pageIndex, actionId, x, y, width, height) =>
+  updateActionBounds: (actionId, x, y, width, height) =>
     set((state) => {
-      const page = state.pages[pageIndex];
-      if (!page) return state;
-
       let changed = false;
-      const newActions = page.actions.map((act) => {
+      const newActions = state.actions.map((act) => {
         if (act.id !== actionId) return act;
         changed = true;
         if (act.tool === "image") {
@@ -363,203 +448,142 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       });
 
       if (!changed) return state;
-      const pages = [...state.pages];
-      pages[pageIndex] = { ...page, actions: newActions };
-      return { pages };
+      return { actions: newActions };
     }),
 
-  updateActionText: (pageIndex, actionId, text) =>
+  updateActionText: (actionId, text) =>
     set((state) => {
-      const page = state.pages[pageIndex];
-      if (!page) return state;
-
       let changed = false;
-      const newActions = page.actions.map((act) => {
+      const newActions = state.actions.map((act) => {
         if (act.id !== actionId || act.tool !== "text") return act;
         changed = true;
         return { ...act, text };
       });
 
       if (!changed) return state;
-      const pages = [...state.pages];
-      pages[pageIndex] = { ...page, actions: newActions };
-      return { pages };
+      return { actions: newActions };
     }),
 
-  bringForward: (pageIndex, actionId) =>
+  bringForward: (actionId) =>
     set((state) => {
-      const pages = [...state.pages];
-      const page = pages[pageIndex];
-      if (!page) return state;
-      const idx = page.actions.findIndex((a) => a.id === actionId);
-      if (idx === -1 || idx === page.actions.length - 1) return state;
+      const idx = state.actions.findIndex((a) => a.id === actionId);
+      if (idx === -1 || idx === state.actions.length - 1) return state;
 
-      const undoHistory = new Map(state.undoHistory);
-      const redoHistory = new Map(state.redoHistory);
-      const pastSnapshots = undoHistory.get(page.id) || [];
-      undoHistory.set(
-        page.id,
-        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-      redoHistory.delete(page.id);
-
-      const actions = [...page.actions];
+      const actions = [...state.actions];
       const [item] = actions.splice(idx, 1);
       actions.splice(idx + 1, 0, item);
-      pages[pageIndex] = { ...page, actions };
-      return { pages, undoHistory, redoHistory };
+
+      return {
+        undoHistory: [...state.undoHistory, state.actions].slice(-MAX_HISTORY),
+        redoHistory: [],
+        actions,
+      };
     }),
 
-  sendBackward: (pageIndex, actionId) =>
+  sendBackward: (actionId) =>
     set((state) => {
-      const pages = [...state.pages];
-      const page = pages[pageIndex];
-      if (!page) return state;
-      const idx = page.actions.findIndex((a) => a.id === actionId);
+      const idx = state.actions.findIndex((a) => a.id === actionId);
       if (idx <= 0) return state;
 
-      const undoHistory = new Map(state.undoHistory);
-      const redoHistory = new Map(state.redoHistory);
-      const pastSnapshots = undoHistory.get(page.id) || [];
-      undoHistory.set(
-        page.id,
-        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-      redoHistory.delete(page.id);
-
-      const actions = [...page.actions];
+      const actions = [...state.actions];
       const [item] = actions.splice(idx, 1);
       actions.splice(idx - 1, 0, item);
-      pages[pageIndex] = { ...page, actions };
-      return { pages, undoHistory, redoHistory };
+
+      return {
+        undoHistory: [...state.undoHistory, state.actions].slice(-MAX_HISTORY),
+        redoHistory: [],
+        actions,
+      };
     }),
 
-  deleteSelectedAction: (pageIndex) =>
+  deleteSelectedAction: () =>
     set((state) => {
-      const targetIds = state.selectedIds.length > 0 ? state.selectedIds : state.selectedId ? [state.selectedId] : [];
+      const targetIds =
+        state.selectedIds.length > 0
+          ? state.selectedIds
+          : state.selectedId
+          ? [state.selectedId]
+          : [];
       if (targetIds.length === 0) return state;
 
-      const pages = [...state.pages];
-      const page = pages[pageIndex];
-      if (!page) return state;
-
-      const undoHistory = new Map(state.undoHistory);
-      const redoHistory = new Map(state.redoHistory);
-      const pastSnapshots = undoHistory.get(page.id) || [];
-      undoHistory.set(
-        page.id,
-        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-      redoHistory.delete(page.id);
-
       const idSet = new Set(targetIds);
-      pages[pageIndex] = {
-        ...page,
-        actions: page.actions.filter((a) => !idSet.has(a.id)),
+      return {
+        undoHistory: [...state.undoHistory, state.actions].slice(-MAX_HISTORY),
+        redoHistory: [],
+        actions: state.actions.filter((a) => !idSet.has(a.id)),
+        selectedId: null,
+        selectedIds: [],
       };
-      return { pages, undoHistory, redoHistory, selectedId: null, selectedIds: [] };
     }),
 
-  deleteActions: (pageIndex, actionIds) =>
+  deleteActions: (actionIds) =>
     set((state) => {
       if (actionIds.length === 0) return state;
-      const pages = [...state.pages];
-      const page = pages[pageIndex];
-      if (!page) return state;
-
-      const undoHistory = new Map(state.undoHistory);
-      const redoHistory = new Map(state.redoHistory);
-      const pastSnapshots = undoHistory.get(page.id) || [];
-      undoHistory.set(
-        page.id,
-        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-      redoHistory.delete(page.id);
-
       const idSet = new Set(actionIds);
-      pages[pageIndex] = {
-        ...page,
-        actions: page.actions.filter((a) => !idSet.has(a.id)),
-      };
-      return { pages, undoHistory, redoHistory, selectedId: null, selectedIds: [] };
-    }),
-
-  undoHistory: new Map(),
-  redoHistory: new Map(),
-
-  undo: (pageIndex) =>
-    set((state) => {
-      const page = state.pages[pageIndex];
-      if (!page) return state;
-
-      const pastSnapshots = state.undoHistory.get(page.id) || [];
-      if (pastSnapshots.length === 0) return state;
-
-      const previousActions = pastSnapshots[pastSnapshots.length - 1];
-      const newUndoHistory = new Map(state.undoHistory);
-      newUndoHistory.set(page.id, pastSnapshots.slice(0, -1));
-
-      const futureSnapshots = state.redoHistory.get(page.id) || [];
-      const newRedoHistory = new Map(state.redoHistory);
-      newRedoHistory.set(
-        page.id,
-        [...futureSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-
-      const pages = [...state.pages];
-      pages[pageIndex] = { ...page, actions: previousActions };
       return {
-        pages,
-        undoHistory: newUndoHistory,
-        redoHistory: newRedoHistory,
+        undoHistory: [...state.undoHistory, state.actions].slice(-MAX_HISTORY),
+        redoHistory: [],
+        actions: state.actions.filter((a) => !idSet.has(a.id)),
         selectedId: null,
         selectedIds: [],
       };
     }),
 
-  redo: (pageIndex) =>
+  selectAll: () =>
+    set((state) => ({
+      selectedIds: state.actions.map((a) => a.id),
+      selectedId: state.actions.length > 0 ? state.actions[0].id : null,
+      activeTool: "select",
+    })),
+
+  clearBoard: () =>
     set((state) => {
-      const page = state.pages[pageIndex];
-      if (!page) return state;
-
-      const futureSnapshots = state.redoHistory.get(page.id) || [];
-      if (futureSnapshots.length === 0) return state;
-
-      const nextActions = futureSnapshots[futureSnapshots.length - 1];
-      const newRedoHistory = new Map(state.redoHistory);
-      newRedoHistory.set(page.id, futureSnapshots.slice(0, -1));
-
-      const pastSnapshots = state.undoHistory.get(page.id) || [];
-      const newUndoHistory = new Map(state.undoHistory);
-      newUndoHistory.set(
-        page.id,
-        [...pastSnapshots, page.actions].slice(-MAX_HISTORY)
-      );
-
-      const pages = [...state.pages];
-      pages[pageIndex] = { ...page, actions: nextActions };
+      if (state.actions.length === 0) return state;
       return {
-        pages,
-        undoHistory: newUndoHistory,
-        redoHistory: newRedoHistory,
+        undoHistory: [...state.undoHistory, state.actions].slice(-MAX_HISTORY),
+        redoHistory: [],
+        actions: [],
         selectedId: null,
         selectedIds: [],
       };
     }),
 
-  canUndo: (pageIndex) => {
-    const page = get().pages[pageIndex];
-    if (!page) return false;
-    const history = get().undoHistory.get(page.id);
-    return history ? history.length > 0 : false;
-  },
+  // Undo / Redo
+  undoHistory: [],
+  redoHistory: [],
 
-  canRedo: (pageIndex) => {
-    const page = get().pages[pageIndex];
-    if (!page) return false;
-    const future = get().redoHistory.get(page.id);
-    return future ? future.length > 0 : false;
-  },
+  undo: () =>
+    set((state) => {
+      if (state.undoHistory.length === 0) return state;
+      const previousActions = state.undoHistory[state.undoHistory.length - 1];
+      const newUndoHistory = state.undoHistory.slice(0, -1);
+
+      return {
+        undoHistory: newUndoHistory,
+        redoHistory: [...state.redoHistory, state.actions].slice(-MAX_HISTORY),
+        actions: previousActions,
+        selectedId: null,
+        selectedIds: [],
+      };
+    }),
+
+  redo: () =>
+    set((state) => {
+      if (state.redoHistory.length === 0) return state;
+      const nextActions = state.redoHistory[state.redoHistory.length - 1];
+      const newRedoHistory = state.redoHistory.slice(0, -1);
+
+      return {
+        undoHistory: [...state.undoHistory, state.actions].slice(-MAX_HISTORY),
+        redoHistory: newRedoHistory,
+        actions: nextActions,
+        selectedId: null,
+        selectedIds: [],
+      };
+    }),
+
+  canUndo: () => get().undoHistory.length > 0,
+  canRedo: () => get().redoHistory.length > 0,
 
   notice: "",
   showNotice: (text) => {

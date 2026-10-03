@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import {
   Undo2,
   Redo2,
@@ -17,14 +17,18 @@ import {
   AlertTriangle,
   Download,
   FileImage,
-  Layers,
   Sparkles,
+  Maximize2,
+  Monitor,
 } from "lucide-react";
 import { useTheme } from "next-themes";
-import { useWhiteboardStore, type ShapeType } from "@/store/whiteboard-store";
+import { useWhiteboardStore } from "@/store/whiteboard-store";
 import { ShapeMenu } from "./shape-menu";
 import { ThemeToggle } from "./theme-toggle";
-import { exportPageAsImage } from "@/lib/export-canvas";
+import {
+  exportCanvasAsImage,
+  exportViewportAsImage,
+} from "@/lib/export-canvas";
 
 const PALETTE = [
   { name: "Charcoal", value: "#202124" },
@@ -51,20 +55,19 @@ export function TopToolbar() {
   const setTool = useWhiteboardStore((s) => s.setTool);
   const selectedShape = useWhiteboardStore((s) => s.selectedShape);
   const setSelectedId = useWhiteboardStore((s) => s.setSelectedId);
-  const pages = useWhiteboardStore((s) => s.pages);
-  const activePageIndex = useWhiteboardStore((s) => s.activePageIndex);
-  const totalPages = pages.length;
-  const addPage = useWhiteboardStore((s) => s.addPage);
-  const clearPage = useWhiteboardStore((s) => s.clearPage);
+  const actions = useWhiteboardStore((s) => s.actions);
+  const clearBoard = useWhiteboardStore((s) => s.clearBoard);
   const addAction = useWhiteboardStore((s) => s.addAction);
   const undo = useWhiteboardStore((s) => s.undo);
   const redo = useWhiteboardStore((s) => s.redo);
   const canUndo = useWhiteboardStore((s) => s.canUndo);
   const canRedo = useWhiteboardStore((s) => s.canRedo);
   const zoom = useWhiteboardStore((s) => s.zoom);
+  const pan = useWhiteboardStore((s) => s.pan);
   const zoomIn = useWhiteboardStore((s) => s.zoomIn);
   const zoomOut = useWhiteboardStore((s) => s.zoomOut);
   const resetZoom = useWhiteboardStore((s) => s.resetZoom);
+  const fitToContent = useWhiteboardStore((s) => s.fitToContent);
   const strokeColor = useWhiteboardStore((s) => s.strokeColor);
   const setColor = useWhiteboardStore((s) => s.setColor);
   const strokeWidth = useWhiteboardStore((s) => s.strokeWidth);
@@ -86,7 +89,7 @@ export function TopToolbar() {
   const [exportOpen, setExportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  // Close menus when clicking outside
+  // Close popovers on outside click
   useEffect(() => {
     const handlePointerDownOutside = (e: PointerEvent) => {
       if (
@@ -119,7 +122,7 @@ export function TopToolbar() {
       document.removeEventListener("pointerdown", handlePointerDownOutside);
   }, []);
 
-  // Keyboard Shortcuts
+  // Global Keyboard Shortcuts for Tools
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -134,13 +137,17 @@ export function TopToolbar() {
         if (key === "z") {
           e.preventDefault();
           if (e.shiftKey) {
-            redo(activePageIndex);
+            redo();
           } else {
-            undo(activePageIndex);
+            undo();
           }
         } else if (key === "y") {
           e.preventDefault();
-          redo(activePageIndex);
+          redo();
+        } else if (key === "0") {
+          e.preventDefault();
+          resetZoom({ width: window.innerWidth, height: window.innerHeight });
+          showNotice("Zoom reset to 100%");
         }
         return;
       }
@@ -179,7 +186,8 @@ export function TopToolbar() {
           zoomIn();
           break;
         case "0":
-          resetZoom();
+          resetZoom({ width: window.innerWidth, height: window.innerHeight });
+          showNotice("Zoom reset to 100%");
           break;
       }
     };
@@ -187,7 +195,6 @@ export function TopToolbar() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    activePageIndex,
     setTool,
     selectedShape,
     undo,
@@ -195,36 +202,12 @@ export function TopToolbar() {
     zoomIn,
     zoomOut,
     resetZoom,
+    showNotice,
   ]);
 
-  const iconBtn = (
-    label: string,
-    icon: React.ReactNode,
-    action: () => void,
-    active = false,
-    disabled = false,
-    tintWithColor = false,
-    extraClass = ""
-  ) => (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      disabled={disabled}
-      className={`wb-tool ${active ? "wb-active" : ""} ${
-        tintWithColor && active ? "wb-active-tinted" : ""
-      } ${extraClass}`}
-      style={
-        tintWithColor && active
-          ? ({ "--tool-color": strokeColor } as React.CSSProperties)
-          : undefined
-      }
-      onClick={action}
-    >
-      {icon}
-    </button>
-  );
+  const handleImageButtonClick = useCallback(() => {
+    fileRef.current?.click();
+  }, []);
 
   const uploadImage = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -248,14 +231,16 @@ export function TopToolbar() {
         const w = Math.round(image.width * scale);
         const h = Math.round(image.height * scale);
 
-        const center = { x: 420 - w / 2, y: 350 - h / 2 };
+        // Place at center of current viewport in world coordinates
+        const centerWorldX = (window.innerWidth / 2 - pan.x) / zoom;
+        const centerWorldY = (window.innerHeight / 2 - pan.y) / zoom;
         const imageId = crypto.randomUUID();
 
-        addAction(activePageIndex, {
+        addAction({
           id: imageId,
           tool: "image",
-          x: Math.max(30, Math.round(center.x)),
-          y: Math.max(30, Math.round(center.y)),
+          x: Math.round(centerWorldX - w / 2),
+          y: Math.round(centerWorldY - h / 2),
           src: dataUrl,
           width: w,
           height: h,
@@ -273,20 +258,18 @@ export function TopToolbar() {
     event.target.value = "";
   };
 
-  const handleClearPageConfirm = () => {
-    clearPage(activePageIndex);
+  const handleClearCanvasConfirm = () => {
+    clearBoard();
     setClearConfirmOpen(false);
-    showNotice(`Page ${activePageIndex + 1} cleared`);
+    showNotice("Whiteboard cleared");
   };
 
-  const handleExportPage = async (format: "png" | "jpeg") => {
+  const handleExportCanvas = async (format: "png" | "jpeg") => {
     try {
       setIsExporting(true);
       setExportOpen(false);
-      const curPage = pages[activePageIndex];
-      if (!curPage) return;
-      await exportPageAsImage(curPage, activePageIndex + 1, format, isDark);
-      showNotice(`Page ${activePageIndex + 1} exported as ${format.toUpperCase()}`);
+      await exportCanvasAsImage(actions, format, isDark);
+      showNotice(`Canvas exported as ${format.toUpperCase()}`);
     } catch {
       showNotice("Export failed");
     } finally {
@@ -294,16 +277,20 @@ export function TopToolbar() {
     }
   };
 
-  const handleExportAllPages = async () => {
+  const handleExportViewport = async () => {
     try {
       setIsExporting(true);
       setExportOpen(false);
-      for (let i = 0; i < pages.length; i++) {
-        await exportPageAsImage(pages[i], i + 1, "png", isDark);
-        // Small stagger for multi-file download
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      showNotice(`Exported all ${pages.length} pages as PNG`);
+      await exportViewportAsImage(
+        actions,
+        pan,
+        zoom,
+        window.innerWidth,
+        window.innerHeight,
+        "png",
+        isDark
+      );
+      showNotice("Current view exported as PNG");
     } catch {
       showNotice("Export failed");
     } finally {
@@ -319,66 +306,102 @@ export function TopToolbar() {
     <div className="wb-top wb-panel" role="toolbar" aria-label="Whiteboard tools">
       {/* ── Undo / Redo ── */}
       <div className="wb-group">
-        {iconBtn(
-          "Undo (⌘Z)",
-          <Undo2 />,
-          () => undo(activePageIndex),
-          false,
-          !canUndo(activePageIndex)
-        )}
-        {iconBtn(
-          "Redo (⌘⇧Z)",
-          <Redo2 />,
-          () => redo(activePageIndex),
-          false,
-          !canRedo(activePageIndex)
-        )}
+        <button
+          type="button"
+          title="Undo (⌘Z)"
+          aria-label="Undo"
+          disabled={!canUndo()}
+          className="wb-tool"
+          onClick={() => undo()}
+        >
+          <Undo2 />
+        </button>
+        <button
+          type="button"
+          title="Redo (⌘⇧Z / ⌘Y)"
+          aria-label="Redo"
+          disabled={!canRedo()}
+          className="wb-tool"
+          onClick={() => redo()}
+        >
+          <Redo2 />
+        </button>
       </div>
 
       <span className="wb-divider" />
 
       {/* ── Core Drawing Tools ── */}
       <div className="wb-group">
-        {iconBtn(
-          "Select (V)",
-          <MousePointer2 />,
-          () => setTool("select"),
-          activeTool === "select"
-        )}
-        {iconBtn(
-          "Pan canvas (H)",
-          <Hand />,
-          () => setTool("pan"),
-          activeTool === "pan"
-        )}
-        {iconBtn(
-          "Pen (P)",
-          <PenLine />,
-          () => setTool("pen"),
-          activeTool === "pen",
-          false,
-          true
-        )}
-        {iconBtn(
-          "Highlighter (M)",
-          <Highlighter />,
-          () => setTool("highlighter"),
-          activeTool === "highlighter",
-          false,
-          true
-        )}
-        {iconBtn(
-          "Pixel Eraser (E)",
-          <Eraser />,
-          () => setTool("eraser"),
-          activeTool === "eraser"
-        )}
-        {iconBtn(
-          "Magic Eraser (X)",
-          <Sparkles />,
-          () => setTool("magic-eraser"),
-          activeTool === "magic-eraser"
-        )}
+        <button
+          type="button"
+          title="Select (V)"
+          aria-label="Select"
+          aria-pressed={activeTool === "select"}
+          className={`wb-tool ${activeTool === "select" ? "wb-active" : ""}`}
+          onClick={() => setTool("select")}
+        >
+          <MousePointer2 />
+        </button>
+        <button
+          type="button"
+          title="Pan canvas (H / Space)"
+          aria-label="Pan canvas"
+          aria-pressed={activeTool === "pan"}
+          className={`wb-tool ${activeTool === "pan" ? "wb-active" : ""}`}
+          onClick={() => setTool("pan")}
+        >
+          <Hand />
+        </button>
+        <button
+          type="button"
+          title="Pen (P)"
+          aria-label="Pen"
+          aria-pressed={activeTool === "pen"}
+          className={`wb-tool ${activeTool === "pen" ? "wb-active wb-active-tinted" : ""}`}
+          style={
+            activeTool === "pen"
+              ? ({ "--tool-color": strokeColor } as React.CSSProperties)
+              : undefined
+          }
+          onClick={() => setTool("pen")}
+        >
+          <PenLine />
+        </button>
+        <button
+          type="button"
+          title="Highlighter (M)"
+          aria-label="Highlighter"
+          aria-pressed={activeTool === "highlighter"}
+          className={`wb-tool ${activeTool === "highlighter" ? "wb-active wb-active-tinted" : ""}`}
+          style={
+            activeTool === "highlighter"
+              ? ({ "--tool-color": strokeColor } as React.CSSProperties)
+              : undefined
+          }
+          onClick={() => setTool("highlighter")}
+        >
+          <Highlighter />
+        </button>
+        <button
+          type="button"
+          title="Pixel Eraser (E)"
+          aria-label="Pixel Eraser"
+          aria-pressed={activeTool === "eraser"}
+          className={`wb-tool ${activeTool === "eraser" ? "wb-active" : ""}`}
+          onClick={() => setTool("eraser")}
+        >
+          <Eraser />
+        </button>
+        <button
+          type="button"
+          title="Magic Eraser (X)"
+          aria-label="Magic Eraser"
+          aria-pressed={activeTool === "magic-eraser"}
+          className={`wb-tool ${activeTool === "magic-eraser" ? "wb-active" : ""}`}
+          onClick={() => setTool("magic-eraser")}
+        >
+          <Sparkles />
+        </button>
       </div>
 
       <span className="wb-divider" />
@@ -386,19 +409,30 @@ export function TopToolbar() {
       {/* ── Shapes, Text & Image ── */}
       <div className="wb-group">
         <ShapeMenu />
-        {iconBtn(
-          "Text (T)",
-          <Type />,
-          () => setTool("text"),
-          activeTool === "text",
-          false,
-          true
-        )}
-        {iconBtn(
-          "Add image",
-          <ImagePlus />,
-          () => fileRef.current?.click()
-        )}
+        <button
+          type="button"
+          title="Text (T)"
+          aria-label="Text"
+          aria-pressed={activeTool === "text"}
+          className={`wb-tool ${activeTool === "text" ? "wb-active wb-active-tinted" : ""}`}
+          style={
+            activeTool === "text"
+              ? ({ "--tool-color": strokeColor } as React.CSSProperties)
+              : undefined
+          }
+          onClick={() => setTool("text")}
+        >
+          <Type />
+        </button>
+        <button
+          type="button"
+          title="Add image"
+          aria-label="Add image"
+          className="wb-tool"
+          onClick={handleImageButtonClick}
+        >
+          <ImagePlus />
+        </button>
       </div>
 
       <span className="wb-divider" />
@@ -570,36 +604,74 @@ export function TopToolbar() {
 
       <span className="wb-divider" />
 
-      {/* ── Zoom Controls ── */}
+      {/* ── Zoom & Fit Controls ── */}
       <div className="wb-group wb-zoom-group">
-        {iconBtn("Zoom out (-)", <Minus />, zoomOut, false, zoom <= 0.4)}
         <button
           type="button"
-          title="Reset zoom (0)"
+          title="Zoom out (-)"
+          aria-label="Zoom out"
+          disabled={zoom <= 0.1}
+          className="wb-tool"
+          onClick={() => zoomOut()}
+        >
+          <Minus />
+        </button>
+        <button
+          type="button"
+          title="Reset zoom to 100% (0)"
+          aria-label="Reset zoom"
           className="wb-zoom-label"
-          onClick={resetZoom}
+          onClick={() => {
+            resetZoom({ width: window.innerWidth, height: window.innerHeight });
+            showNotice("Zoom 100%");
+          }}
         >
           {Math.round(zoom * 100)}%
         </button>
-        {iconBtn("Zoom in (+)", <Plus />, zoomIn, false, zoom >= 3.0)}
+        <button
+          type="button"
+          title="Zoom in (+)"
+          aria-label="Zoom in"
+          disabled={zoom >= 5.0}
+          className="wb-tool"
+          onClick={() => zoomIn()}
+        >
+          <Plus />
+        </button>
+        <button
+          type="button"
+          title="Fit all content to view (Shift + 1)"
+          aria-label="Fit to content"
+          className="wb-tool"
+          onClick={() => {
+            fitToContent({ width: window.innerWidth, height: window.innerHeight });
+            showNotice("Fitted to content");
+          }}
+        >
+          <Maximize2 />
+        </button>
       </div>
 
       <span className="wb-divider" />
 
-      {/* ── Export Canvas as Images ── */}
+      {/* ── Export Canvas Popover ── */}
       <div className="relative flex items-center" ref={exportMenuRef}>
-        {iconBtn(
-          "Export image",
-          <Download />,
-          () => {
+        <button
+          type="button"
+          title="Export canvas"
+          aria-label="Export canvas"
+          aria-pressed={exportOpen}
+          disabled={isExporting}
+          className={`wb-tool ${exportOpen ? "wb-active" : ""}`}
+          onClick={() => {
             setExportOpen((prev) => !prev);
             setColorOpen(false);
             setSizeOpen(false);
             setClearConfirmOpen(false);
-          },
-          exportOpen,
-          isExporting
-        )}
+          }}
+        >
+          <Download />
+        </button>
 
         {exportOpen && (
           <div
@@ -607,73 +679,71 @@ export function TopToolbar() {
             role="menu"
             aria-label="Export canvas options"
           >
-            <div className="wb-popover-title">Export as Image</div>
+            <div className="wb-popover-title">Export Canvas</div>
             <button
               type="button"
               className="wb-export-option"
-              onClick={() => handleExportPage("png")}
+              onClick={() => handleExportCanvas("png")}
             >
               <FileImage className="wb-export-icon" />
               <div className="wb-export-text">
-                <span className="wb-export-name">Page {activePageIndex + 1} (PNG)</span>
-                <span className="wb-export-desc">High resolution lossless</span>
+                <span className="wb-export-name">Canvas Content (PNG)</span>
+                <span className="wb-export-desc">Auto-cropped high-res 2x</span>
               </div>
             </button>
             <button
               type="button"
               className="wb-export-option"
-              onClick={() => handleExportPage("jpeg")}
+              onClick={() => handleExportCanvas("jpeg")}
             >
               <FileImage className="wb-export-icon" />
               <div className="wb-export-text">
-                <span className="wb-export-name">Page {activePageIndex + 1} (JPG)</span>
+                <span className="wb-export-name">Canvas Content (JPG)</span>
                 <span className="wb-export-desc">Compressed image</span>
               </div>
             </button>
-            {totalPages > 1 && (
-              <>
-                <div className="wb-popover-divider" />
-                <button
-                  type="button"
-                  className="wb-export-option"
-                  onClick={handleExportAllPages}
-                >
-                  <Layers className="wb-export-icon" />
-                  <div className="wb-export-text">
-                    <span className="wb-export-name">All Pages ({totalPages})</span>
-                    <span className="wb-export-desc">Download each as PNG</span>
-                  </div>
-                </button>
-              </>
-            )}
+            <div className="wb-popover-divider" />
+            <button
+              type="button"
+              className="wb-export-option"
+              onClick={handleExportViewport}
+            >
+              <Monitor className="wb-export-icon" />
+              <div className="wb-export-text">
+                <span className="wb-export-name">Current Viewport (PNG)</span>
+                <span className="wb-export-desc">Exact screen view</span>
+              </div>
+            </button>
           </div>
         )}
       </div>
 
-      {/* ── Clear Page with Confirmation ── */}
+      {/* ── Clear Canvas with Confirmation ── */}
       <div className="relative flex items-center" ref={clearMenuRef}>
-        {iconBtn(
-          "Clear page",
-          <Trash2 />,
-          () => setClearConfirmOpen((prev) => !prev),
-          clearConfirmOpen,
-          false,
-          false,
-          "wb-tool-delete"
-        )}
+        <button
+          type="button"
+          title="Clear whiteboard"
+          aria-label="Clear whiteboard"
+          aria-pressed={clearConfirmOpen}
+          disabled={actions.length === 0}
+          className={`wb-tool wb-tool-delete ${clearConfirmOpen ? "wb-active" : ""}`}
+          onClick={() => setClearConfirmOpen((prev) => !prev)}
+        >
+          <Trash2 />
+        </button>
 
         {clearConfirmOpen && (
           <div
             className="wb-confirm-popover wb-panel"
             role="alertdialog"
-            aria-label="Confirm Clear Page"
+            aria-label="Confirm Clear Canvas"
           >
             <div className="wb-confirm-header">
               <AlertTriangle className="wb-confirm-warn-icon" />
-              <span>Clear page {activePageIndex + 1}?</span>
+              <span>Clear Whiteboard?</span>
             </div>
             <p className="wb-confirm-desc">
-              All drawings and items on this page will be removed.
+              All drawings and items on the infinite canvas will be removed.
             </p>
             <div className="wb-confirm-actions">
               <button
@@ -686,9 +756,9 @@ export function TopToolbar() {
               <button
                 type="button"
                 className="wb-confirm-btn wb-confirm-danger"
-                onClick={handleClearPageConfirm}
+                onClick={handleClearCanvasConfirm}
               >
-                Clear
+                Clear All
               </button>
             </div>
           </div>
@@ -697,23 +767,9 @@ export function TopToolbar() {
 
       <span className="wb-divider" />
 
-      {/* ── Add Page ── */}
-      <div className="wb-group">
-        {iconBtn("Add page", <Plus />, addPage)}
-      </div>
-
-      <span className="wb-divider" />
-
       {/* ── Theme Toggle ── */}
       <div className="wb-group">
         <ThemeToggle />
-      </div>
-
-      <span className="wb-divider" />
-
-      {/* ── Page Indicator ── */}
-      <div className="wb-page-indicator" title="Current Page / Total Pages">
-        {activePageIndex + 1} / {totalPages}
       </div>
 
       <input
