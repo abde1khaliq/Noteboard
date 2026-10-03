@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useCallback, useMemo } from "react";
+import { X } from "lucide-react";
 import {
   useWhiteboardStore,
   type Stroke,
@@ -12,12 +13,13 @@ import {
 
 interface MinimapProps {
   visible: boolean;
+  onClose?: () => void;
 }
 
 const MAP_WIDTH = 200;
 const MAP_HEIGHT = 135;
 
-export function Minimap({ visible }: MinimapProps) {
+export function Minimap({ visible, onClose }: MinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isDraggingMap = useRef(false);
 
@@ -339,10 +341,23 @@ export function Minimap({ visible }: MinimapProps) {
     >
       <div className="wb-panel p-2 rounded-2xl shadow-xl flex flex-col gap-1.5 backdrop-blur-xl bg-[var(--wb-panel)] border border-[var(--wb-border)] overflow-hidden">
         <div className="flex items-center justify-between px-1 text-[10px] font-bold uppercase tracking-wider text-[var(--wb-muted)] select-none">
-          <span>Minimap</span>
-          <span className="text-[9px] font-medium opacity-70">
-            {actions.length} {actions.length === 1 ? "item" : "items"}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span>Minimap</span>
+            <span className="text-[9px] font-medium opacity-70">
+              {actions.length} {actions.length === 1 ? "item" : "items"}
+            </span>
+          </div>
+          {onClose && (
+            <button
+              type="button"
+              title="Close minimap"
+              aria-label="Close minimap"
+              className="p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/10 text-[var(--wb-muted)] hover:text-[var(--wb-ink)] transition-colors cursor-pointer"
+              onClick={onClose}
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
         </div>
 
         <div className="relative rounded-xl overflow-hidden border border-black/5 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.03]">

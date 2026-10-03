@@ -191,7 +191,9 @@ interface WhiteboardState {
   pan: { x: number; y: number };
   zoom: number;
   setPan: (pan: { x: number; y: number } | ((prev: { x: number; y: number }) => { x: number; y: number })) => void;
+  setViewport: (pan: { x: number; y: number }, zoom: number) => void;
   setZoom: (zoom: number, anchor?: { x: number; y: number }) => void;
+  zoomByFactor: (factor: number, anchor?: { x: number; y: number }) => void;
   zoomIn: (anchor?: { x: number; y: number }) => void;
   zoomOut: (anchor?: { x: number; y: number }) => void;
   resetZoom: (viewport?: { width: number; height: number }) => void;
@@ -266,35 +268,64 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       pan: typeof panOrUpdater === "function" ? panOrUpdater(state.pan) : panOrUpdater,
     })),
 
+  setViewport: (pan, zoom) =>
+    set({
+      pan,
+      zoom: Math.min(Math.max(Number(zoom.toFixed(3)), 0.1), 5.0),
+    }),
+
   setZoom: (newZoom, anchor) =>
     set((state) => {
       const clampedZoom = Math.min(Math.max(Number(newZoom.toFixed(3)), 0.1), 5.0);
       if (clampedZoom === state.zoom) return state;
 
-      if (anchor) {
-        // Zoom anchored at specific screen coordinate
-        const k = clampedZoom / state.zoom;
-        const newPanX = anchor.x - (anchor.x - state.pan.x) * k;
-        const newPanY = anchor.y - (anchor.y - state.pan.y) * k;
-        return {
-          zoom: clampedZoom,
-          pan: { x: Math.round(newPanX), y: Math.round(newPanY) },
-        };
-      }
+      const effectiveAnchor = anchor ?? {
+        x: typeof window !== "undefined" ? window.innerWidth / 2 : 0,
+        y: typeof window !== "undefined" ? window.innerHeight / 2 : 0,
+      };
 
-      return { zoom: clampedZoom };
+      const k = clampedZoom / state.zoom;
+      const newPanX = effectiveAnchor.x - (effectiveAnchor.x - state.pan.x) * k;
+      const newPanY = effectiveAnchor.y - (effectiveAnchor.y - state.pan.y) * k;
+      return {
+        zoom: clampedZoom,
+        pan: { x: Math.round(newPanX), y: Math.round(newPanY) },
+      };
+    }),
+
+  zoomByFactor: (factor, anchor) =>
+    set((state) => {
+      const targetZoom = Math.min(
+        Math.max(Number((state.zoom * factor).toFixed(3)), 0.1),
+        5.0
+      );
+      if (targetZoom === state.zoom) return state;
+
+      const effectiveAnchor = anchor ?? {
+        x: typeof window !== "undefined" ? window.innerWidth / 2 : 0,
+        y: typeof window !== "undefined" ? window.innerHeight / 2 : 0,
+      };
+
+      const k = targetZoom / state.zoom;
+      const newPanX = effectiveAnchor.x - (effectiveAnchor.x - state.pan.x) * k;
+      const newPanY = effectiveAnchor.y - (effectiveAnchor.y - state.pan.y) * k;
+
+      return {
+        zoom: targetZoom,
+        pan: { x: Math.round(newPanX), y: Math.round(newPanY) },
+      };
     }),
 
   zoomIn: (anchor) => {
     const current = get().zoom;
     const factor = current < 0.5 ? 1.25 : 1.2;
-    get().setZoom(current * factor, anchor);
+    get().zoomByFactor(factor, anchor);
   },
 
   zoomOut: (anchor) => {
     const current = get().zoom;
     const factor = current < 0.5 ? 1.25 : 1.2;
-    get().setZoom(current / factor, anchor);
+    get().zoomByFactor(1 / factor, anchor);
   },
 
   resetZoom: (viewport) => {
